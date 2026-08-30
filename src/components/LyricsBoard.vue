@@ -1,14 +1,14 @@
 <template>
-  <div class="w-full h-full flex flex-col justify-center items-center bg-transparent text-white select-none px-6 pointer-events-none">
+  <div class="amdl-lyrics w-full h-full flex flex-col justify-center items-center bg-transparent select-none px-6 pointer-events-none">
     <!-- 歌词展示 -->
-    <div class="text-3xl font-black text-center leading-tight bg-clip-text text-transparent bg-gradient-to-r from-pink-400 via-fuchsia-400 to-purple-500 drop-shadow-lg transition-all duration-300"
+    <div class="amdl-lyrics-stack transition-all duration-300"
          :class="isPlaying ? 'opacity-100 scale-100' : 'opacity-50 scale-95'"
     >
       <template v-if="displayMode !== 'line'">
-        {{ displayText }}
+        <div class="amdl-lyric-line is-active">{{ displayText }}</div>
       </template>
       <template v-else-if="displayLines.length">
-        <div v-for="line in displayLines" :key="`${line.begin_ms}-${line.text}`">
+        <div v-for="(line, index) in displayLines" :key="`${line.begin_ms}-${line.text}`" class="amdl-lyric-line" :class="{ 'is-active': index === displayLines.length - 1 }">
           {{ line.text }}
         </div>
       </template>

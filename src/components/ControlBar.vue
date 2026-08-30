@@ -4,7 +4,7 @@
     :class="show ? 'translate-y-0 opacity-100 pointer-events-auto' : '-translate-y-2 opacity-0 pointer-events-none'"
     @mousedown="startWindowDrag"
   >
-    <div class="flex min-h-12 items-center justify-between gap-4 px-4 py-2">
+    <div class="flex min-h-10 items-center justify-between gap-3 px-3 py-1">
       <div ref="trackViewport" class="min-w-0 flex-1 overflow-hidden whitespace-nowrap text-sm text-white">
         <div ref="trackText" class="inline-block" :style="trackTextStyle">
           <template v-if="title && artist"><strong class="font-bold">{{ title }}</strong><span class="text-white/70"> — {{ artist }}</span></template>
@@ -15,16 +15,16 @@
       <div class="flex flex-shrink-0 items-center gap-1 text-white">
         <span class="w-10 text-right text-xs tabular-nums text-white/60">{{ formatTime(positionMs) }}</span>
         <span class="w-10 text-right text-xs tabular-nums text-white/60">{{ formatTime(durationMs) }}</span>
-        <button class="flex h-8 w-8 items-center justify-center transition-colors hover:text-pink-400 active:scale-90" @mousedown.stop @click="emit('prev')" title="上一曲"><SkipBack :size="17" /></button>
-        <button class="flex h-8 w-8 items-center justify-center transition-colors hover:text-pink-400 active:scale-90" @mousedown.stop @click="emit('playPause')" title="播放/暂停"><Pause v-if="isPlaying" :size="18" /><Play v-else :size="18" /></button>
-        <button class="flex h-8 w-8 items-center justify-center transition-colors hover:text-pink-400 active:scale-90" @mousedown.stop @click="emit('next')" title="下一曲"><SkipForward :size="17" /></button>
-        <button class="flex h-8 w-8 items-center justify-center transition-colors hover:text-pink-400 active:scale-90" @mousedown.stop @click="emit('toggleLock')" :title="locked ? '解锁窗口拖动' : '锁定窗口拖动'"><Lock v-if="locked" :size="16" /><Unlock v-else :size="16" /></button>
-        <button class="flex h-8 w-8 items-center justify-center text-white/70 transition-colors hover:text-white active:scale-90" @mousedown.stop @click="emit('settings')" title="设置"><Settings :size="17" /></button>
-        <button class="flex h-8 w-8 items-center justify-center transition-colors hover:text-red-400 active:scale-90" @mousedown.stop @click="emit('close')" title="关闭"><X :size="18" /></button>
+        <button class="flex h-7 w-7 items-center justify-center transition-colors hover:text-pink-400 active:scale-90" @mousedown.stop @click="emit('prev')" title="上一曲"><SkipBack :size="16" /></button>
+        <button class="flex h-7 w-7 items-center justify-center transition-colors hover:text-pink-400 active:scale-90" @mousedown.stop @click="emit('playPause')" title="播放/暂停"><Pause v-if="isPlaying" :size="17" /><Play v-else :size="17" /></button>
+        <button class="flex h-7 w-7 items-center justify-center transition-colors hover:text-pink-400 active:scale-90" @mousedown.stop @click="emit('next')" title="下一曲"><SkipForward :size="16" /></button>
+        <button class="flex h-7 w-7 items-center justify-center transition-colors hover:text-pink-400 active:scale-90" @mousedown.stop @click="emit('toggleLock')" :title="locked ? '解锁窗口拖动' : '锁定窗口拖动'"><Lock v-if="locked" :size="15" /><Unlock v-else :size="15" /></button>
+        <button class="flex h-7 w-7 items-center justify-center text-white/70 transition-colors hover:text-white active:scale-90" @mousedown.stop @click="emit('settings')" title="设置"><Settings :size="16" /></button>
+        <button class="flex h-7 w-7 items-center justify-center transition-colors hover:text-red-400 active:scale-90" @mousedown.stop @click="emit('close')" title="关闭"><X :size="17" /></button>
       </div>
     </div>
-    <div class="h-1 w-full bg-white/15" aria-hidden="true">
-      <div class="h-full bg-pink-400 transition-[width] duration-300 ease-linear" :style="{ width: `${progressPercent}%` }"></div>
+    <div class="h-0.5 w-full bg-white/15" aria-hidden="true">
+      <div class="amdl-progress-fill h-full transition-[width] duration-300 ease-linear" :style="{ width: `${progressPercent}%` }"></div>
     </div>
   </div>
 </template>

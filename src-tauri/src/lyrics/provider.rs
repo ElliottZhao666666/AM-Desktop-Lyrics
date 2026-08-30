@@ -9,7 +9,7 @@ use crate::lyrics::qq_music;
 
 static LYRICS_REQUEST_GENERATION: AtomicU64 = AtomicU64::new(0);
 static LAST_REQUESTED_TRACK: Mutex<Option<TrackIdentity>> = Mutex::new(None);
-const LOCAL_CACHE_LIMIT: usize = 10;
+const LOCAL_CACHE_LIMIT: usize = 50;
 static LOCAL_LYRICS_CACHE: Mutex<Option<Vec<LyricsDocument>>> = Mutex::new(None);
 
 /// 搜索、下载、解析并发送歌词；旧请求返回后会因 generation 校验而丢弃。
@@ -116,6 +116,33 @@ fn local_cache_path() -> Option<std::path::PathBuf> {
     })
 }
 
+fn local_cache_limit() -> usize {
+    let Some(path) = std::env::var_os("LOCALAPPDATA").map(|value| {
+        std::path::PathBuf::from(value)
+            .join("AM-Desktop-Lyrics")
+            .join("settings.json")
+    }) else {
+        return 10;
+    };
+    let Ok(encoded) = std::fs::read_to_string(path) else {
+        return 10;
+    };
+    let Ok(bytes) =
+        base64::Engine::decode(&base64::engine::general_purpose::STANDARD, encoded.trim())
+    else {
+        return 10;
+    };
+    serde_json::from_slice::<serde_json::Value>(&bytes)
+        .ok()
+        .and_then(|value| {
+            value
+                .get("localCacheLimit")
+                .and_then(serde_json::Value::as_u64)
+        })
+        .map(|value| value.clamp(1, 50) as usize)
+        .unwrap_or(10)
+}
+
 fn load_local_cache() -> Vec<LyricsDocument> {
     let Some(path) = local_cache_path() else {
         return Vec::new();
@@ -143,7 +170,7 @@ fn local_cache_put(document: &LyricsDocument) {
     let entries = cache.get_or_insert_with(load_local_cache);
     entries.retain(|entry| entry.track != document.track);
     entries.insert(0, document.clone());
-    entries.truncate(LOCAL_CACHE_LIMIT);
+    entries.truncate(local_cache_limit().min(LOCAL_CACHE_LIMIT));
     persist_local_cache(entries);
     println!("[LyricsCache] 已写入自身缓存: entries={}", entries.len());
 }

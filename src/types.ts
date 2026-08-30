@@ -50,3 +50,15 @@ export interface LyricsStatusPayload {
   state: LyricsLoadState;
   message: string | null;
 }
+
+export interface AppSettings {
+  autoConvertTraditionalToSimplified: boolean;
+  localCacheLimit: number;
+  themeName: string;
+  themeCss: string;
+}
+
+export interface ThemeFile {
+  name: string;
+  css: string;
+}

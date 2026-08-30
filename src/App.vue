@@ -1,5 +1,6 @@
 <template>
-  <div 
+  <SettingsView v-if="isSettingsWindow" />
+  <div v-else
     class="w-screen h-screen relative overflow-hidden bg-transparent"
     @mouseenter="isHovering = true"
     @mouseleave="isHovering = false"
@@ -18,7 +19,7 @@
       @next="onNext"
       @settings="onSettings"
       @toggleLock="controlsLocked = !controlsLocked"
-      @close="onClose"
+      @close="onHide"
     />
     <LyricsBoard 
       :title="mediaTitle"
@@ -39,7 +40,9 @@ import { listen, type UnlistenFn } from '@tauri-apps/api/event';
 import { getCurrentWindow } from '@tauri-apps/api/window';
 import ControlBar from './components/ControlBar.vue';
 import LyricsBoard from './components/LyricsBoard.vue';
+import SettingsView from './components/SettingsView.vue';
 import type {
+  AppSettings,
   LyricsDocument,
   LyricsLoadState,
   LyricsStatusPayload,
@@ -47,6 +50,8 @@ import type {
   MediaSnapshotPayload,
   MediaStatePayload,
 } from './types';
+
+const isSettingsWindow = getCurrentWindow().label === 'settings';
 
 // ==========================================
 // 响应式状态
@@ -68,10 +73,22 @@ let unlistenMediaPosition: UnlistenFn | null = null;
 let unlistenLyricsLoaded: UnlistenFn | null = null;
 let unlistenLyricsStatus: UnlistenFn | null = null;
 let animationFrameId: number | null = null;
+let unlistenTrayLock: UnlistenFn | null = null;
+let unlistenSettings: UnlistenFn | null = null;
 let clockAnchorPositionMs = 0;
 let clockAnchorTime = performance.now();
 
 const CLOCK_SNAP_THRESHOLD_MS = 300;
+
+function applyTheme(css: string) {
+  let style = document.querySelector<HTMLStyleElement>('#amdl-runtime-theme');
+  if (!style) {
+    style = document.createElement('style');
+    style.id = 'amdl-runtime-theme';
+    document.head.appendChild(style);
+  }
+  style.textContent = css;
+}
 
 function interpolatedPosition(now = performance.now()) {
   const elapsed = isPlaying.value ? Math.max(0, now - clockAnchorTime) : 0;
@@ -128,6 +145,16 @@ function applyMediaState(payload: MediaStatePayload) {
 // 生命周期
 // ==========================================
 onMounted(async () => {
+  if (isSettingsWindow) return;
+
+  try {
+    const settings = await invoke<AppSettings>('get_settings');
+    applyTheme(settings.themeCss);
+  } catch (error) {
+    console.error('get_settings failed:', error);
+  }
+  unlistenSettings = await listen<AppSettings>('settings-changed', (event) => applyTheme(event.payload.themeCss));
+
   // 监听 Rust 端广播的媒体状态变更事件
   unlistenMediaState = await listen<MediaStatePayload>('media-state-changed', (event) => {
     console.log('[IPC] media-state-changed:', event.payload);
@@ -150,6 +177,9 @@ onMounted(async () => {
     lyricsState.value = event.payload.state;
     lyricsMessage.value = event.payload.message;
   });
+  unlistenTrayLock = await listen('tray-toggle-lock', () => {
+    controlsLocked.value = !controlsLocked.value;
+  });
 
   // 监听全部就绪后主动读取一次快照，补回 WebView 挂载前可能错过的事件。
   try {
@@ -168,6 +198,8 @@ onUnmounted(() => {
   unlistenMediaPosition?.();
   unlistenLyricsLoaded?.();
   unlistenLyricsStatus?.();
+  unlistenTrayLock?.();
+  unlistenSettings?.();
   if (animationFrameId !== null) cancelAnimationFrame(animationFrameId);
 });
 
@@ -207,10 +239,11 @@ const onNext = async () => {
 
 const onSettings = async () => {
   console.log('[UI] Settings requested');
+  try { await invoke('open_settings'); } catch (error) { console.error('open_settings failed:', error); }
 };
 
-const onClose = async () => {
-  console.log('[UI] Close application');
-  await getCurrentWindow().close();
+const onHide = async () => {
+  console.log('[UI] Hide lyrics window');
+  await getCurrentWindow().hide();
 };
 </script>

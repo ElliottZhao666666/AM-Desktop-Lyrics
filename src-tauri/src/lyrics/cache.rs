@@ -11,7 +11,7 @@ const MAX_CACHE_FILE_SIZE: u64 = 8 * 1024 * 1024;
 const CACHE_TIMESTAMP_TOLERANCE: Duration = Duration::from_secs(2);
 const CACHE_SCAN_ATTEMPTS: usize = 5;
 const CACHE_SCAN_INTERVAL: Duration = Duration::from_millis(120);
-const AUTO_CONVERT_TRADITIONAL_TO_SIMPLIFIED: bool = true;
+const DEFAULT_AUTO_CONVERT_TRADITIONAL_TO_SIMPLIFIED: bool = true;
 
 #[derive(serde::Deserialize)]
 struct CachedLyrics {
@@ -67,7 +67,7 @@ pub fn fetch_lyrics(
 }
 
 fn convert_to_simplified(mut document: LyricsDocument) -> LyricsDocument {
-    if !AUTO_CONVERT_TRADITIONAL_TO_SIMPLIFIED {
+    if !auto_convert_traditional_to_simplified() {
         return document;
     }
     let converter = match OpenCC::from_config(BuiltinConfig::T2s) {
@@ -94,6 +94,32 @@ fn convert_to_simplified(mut document: LyricsDocument) -> LyricsDocument {
         println!("[Cache] 歌词无需繁转简");
     }
     document
+}
+
+fn auto_convert_traditional_to_simplified() -> bool {
+    let Some(path) = std::env::var_os("LOCALAPPDATA").map(|value| {
+        std::path::PathBuf::from(value)
+            .join("AM-Desktop-Lyrics")
+            .join("settings.json")
+    }) else {
+        return DEFAULT_AUTO_CONVERT_TRADITIONAL_TO_SIMPLIFIED;
+    };
+    let Ok(encoded) = std::fs::read_to_string(path) else {
+        return DEFAULT_AUTO_CONVERT_TRADITIONAL_TO_SIMPLIFIED;
+    };
+    let Ok(bytes) =
+        base64::Engine::decode(&base64::engine::general_purpose::STANDARD, encoded.trim())
+    else {
+        return DEFAULT_AUTO_CONVERT_TRADITIONAL_TO_SIMPLIFIED;
+    };
+    serde_json::from_slice::<serde_json::Value>(&bytes)
+        .ok()
+        .and_then(|value| {
+            value
+                .get("autoConvertTraditionalToSimplified")
+                .and_then(serde_json::Value::as_bool)
+        })
+        .unwrap_or(DEFAULT_AUTO_CONVERT_TRADITIONAL_TO_SIMPLIFIED)
 }
 
 #[cfg(windows)]
