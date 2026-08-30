@@ -4,12 +4,14 @@ use std::time::{Duration, SystemTime};
 
 use crate::domain::{LyricsDocument, LyricsSource, TrackIdentity};
 use crate::lyrics::ttml::parse_ttml;
+use ferrous_opencc::{config::BuiltinConfig, OpenCC};
 
 const CACHE_FILE_PREFIX: &str = "ttmlLyrics";
 const MAX_CACHE_FILE_SIZE: u64 = 8 * 1024 * 1024;
 const CACHE_TIMESTAMP_TOLERANCE: Duration = Duration::from_secs(2);
 const CACHE_SCAN_ATTEMPTS: usize = 5;
 const CACHE_SCAN_INTERVAL: Duration = Duration::from_millis(120);
+const AUTO_CONVERT_TRADITIONAL_TO_SIMPLIFIED: bool = true;
 
 #[derive(serde::Deserialize)]
 struct CachedLyrics {
@@ -49,7 +51,7 @@ pub fn fetch_lyrics(
             println!("[Cache] 第 {}/{} 次扫描", attempt + 1, CACHE_SCAN_ATTEMPTS);
             if let Some(document) = scan_cache_once(&root, track, requested_at)? {
                 println!("[Cache] 查找完成: 命中，共 {} 行", document.lines.len());
-                return Ok(Some(document));
+                return Ok(Some(convert_to_simplified(document)));
             }
             if attempt + 1 < CACHE_SCAN_ATTEMPTS {
                 println!(
@@ -62,6 +64,36 @@ pub fn fetch_lyrics(
         println!("[Cache] 查找完成: 所有扫描均未命中");
         Ok(None)
     }
+}
+
+fn convert_to_simplified(mut document: LyricsDocument) -> LyricsDocument {
+    if !AUTO_CONVERT_TRADITIONAL_TO_SIMPLIFIED {
+        return document;
+    }
+    let converter = match OpenCC::from_config(BuiltinConfig::T2s) {
+        Ok(converter) => converter,
+        Err(error) => {
+            eprintln!("[Cache] 繁转简转换器初始化失败，保留原歌词: {error}");
+            return document;
+        }
+    };
+    let mut changed = false;
+    for line in &mut document.lines {
+        let converted = converter.convert(&line.text);
+        changed |= converted != line.text;
+        line.text = converted;
+        for word in &mut line.words {
+            let converted = converter.convert(&word.text);
+            changed |= converted != word.text;
+            word.text = converted;
+        }
+    }
+    if changed {
+        println!("[Cache] 检测到繁体歌词，已转换为简体");
+    } else {
+        println!("[Cache] 歌词无需繁转简");
+    }
+    document
 }
 
 #[cfg(windows)]
@@ -185,4 +217,33 @@ fn is_lyrics_cache_name(name: &str) -> bool {
         return false;
     };
     !number.is_empty() && number.chars().all(|ch| ch.is_ascii_digit())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::convert_to_simplified;
+    use crate::domain::{LyricLine, LyricWord, LyricsDocument, LyricsSource, TrackIdentity};
+
+    #[test]
+    fn converts_cached_lyrics_to_simplified_chinese() {
+        let document = LyricsDocument {
+            track: TrackIdentity::default(),
+            source: LyricsSource::AppleMusicCache,
+            duration_ms: None,
+            lines: vec![LyricLine {
+                begin_ms: 0,
+                end_ms: Some(1_000),
+                text: "這條歌陪我一直到大漢".into(),
+                words: vec![LyricWord {
+                    text: "這條歌".into(),
+                    begin_ms: 0,
+                    end_ms: 1_000,
+                }],
+            }],
+        };
+
+        let converted = convert_to_simplified(document);
+        assert_eq!(converted.lines[0].text, "这条歌陪我一直到大汉");
+        assert_eq!(converted.lines[0].words[0].text, "这条歌");
+    }
 }

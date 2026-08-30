@@ -296,4 +296,16 @@ mod tests {
 
         assert_eq!(doc.lines[0].words[0].text, "ABC");
     }
+
+    #[test]
+    fn preserves_overlapping_lines() {
+        let xml = r#"<tt><body><div><p begin="3:20.025" end="3:29.289">First</p><p begin="3:21.022" end="3:24.366">Second</p><p begin="3:21.405" end="3:24.063">Third</p></div></body></tt>"#;
+        let doc = parse_ttml(TrackIdentity::default(), LyricsSource::AppleMusicCache, xml).unwrap();
+
+        assert_eq!(doc.lines.len(), 3);
+        assert_eq!(doc.lines[0].begin_ms, 200_025);
+        assert_eq!(doc.lines[0].end_ms, Some(209_289));
+        assert_eq!(doc.lines[1].begin_ms, 201_022);
+        assert_eq!(doc.lines[2].begin_ms, 201_405);
+    }
 }

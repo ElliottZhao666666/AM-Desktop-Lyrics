@@ -1,14 +1,16 @@
 <template>
   <div class="w-full h-full flex flex-col justify-center items-center bg-transparent text-white select-none px-6 pointer-events-none">
     <!-- 歌词展示 -->
-    <div class="text-3xl font-black bg-clip-text text-transparent bg-gradient-to-r from-pink-400 via-fuchsia-400 to-purple-500 drop-shadow-lg transition-all duration-300"
+    <div class="text-3xl font-black text-center leading-tight bg-clip-text text-transparent bg-gradient-to-r from-pink-400 via-fuchsia-400 to-purple-500 drop-shadow-lg transition-all duration-300"
          :class="isPlaying ? 'opacity-100 scale-100' : 'opacity-50 scale-95'"
     >
       <template v-if="displayMode !== 'line'">
         {{ displayText }}
       </template>
-      <template v-else-if="currentLine">
-        {{ currentLine.text }}
+      <template v-else-if="displayLines.length">
+        <div v-for="line in displayLines" :key="`${line.begin_ms}-${line.text}`">
+          {{ line.text }}
+        </div>
       </template>
     </div>
 
@@ -43,12 +45,23 @@ const activeLineIndex = computed(() => {
   return index;
 });
 
-const currentLine = computed(() => activeLineIndex.value >= 0 ? props.lyrics?.lines[activeLineIndex.value] ?? null : null);
+const currentLines = computed(() => {
+  if (!props.lyrics) return [];
+  return props.lyrics.lines
+    .filter((line) => line.begin_ms <= props.positionMs && (line.end_ms === null || line.end_ms > props.positionMs))
+    .slice(-3);
+});
+
+const displayLines = computed(() => {
+  if (currentLines.value.length) return currentLines.value;
+  if (activeLineIndex.value < 0 || !props.lyrics) return [];
+  return [props.lyrics.lines[activeLineIndex.value]];
+});
 
 const displayMode = computed<'status' | 'intro' | 'interlude' | 'line'>(() => {
   if (props.lyricsState !== 'loaded' || !props.lyrics?.lines.length) return 'status';
   if (activeLineIndex.value < 0) return 'intro';
-  const line = props.lyrics.lines[activeLineIndex.value];
+  const line = currentLines.value[0] ?? props.lyrics.lines[activeLineIndex.value];
   const next = props.lyrics.lines[activeLineIndex.value + 1];
   if (!next) return 'line';
   const lineEnd = line.end_ms ?? line.begin_ms;

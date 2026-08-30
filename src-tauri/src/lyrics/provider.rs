@@ -3,12 +3,14 @@ use std::sync::Mutex;
 use std::time::SystemTime;
 use tauri::{AppHandle, Emitter};
 
-use crate::domain::{LyricsLoadState, LyricsStatusPayload, TrackIdentity};
+use crate::domain::{LyricsDocument, LyricsLoadState, LyricsStatusPayload, TrackIdentity};
 use crate::lyrics::cache;
 use crate::lyrics::qq_music;
 
 static LYRICS_REQUEST_GENERATION: AtomicU64 = AtomicU64::new(0);
 static LAST_REQUESTED_TRACK: Mutex<Option<TrackIdentity>> = Mutex::new(None);
+const LOCAL_CACHE_LIMIT: usize = 10;
+static LOCAL_LYRICS_CACHE: Mutex<Option<Vec<LyricsDocument>>> = Mutex::new(None);
 
 /// 搜索、下载、解析并发送歌词；旧请求返回后会因 generation 校验而丢弃。
 pub fn fetch_and_emit_lyrics(track: TrackIdentity, app_handle: AppHandle) {
@@ -32,6 +34,11 @@ pub fn fetch_and_emit_lyrics(track: TrackIdentity, app_handle: AppHandle) {
             return;
         }
 
+        if let Some(document) = local_cache_get(&track) {
+            println!("[LyricsCache] 命中自身缓存: track={track:?}");
+            emit_loaded(&app_handle, &document);
+            return;
+        }
         println!(
             "[Lyrics] 正在读取 Apple Music 本地缓存: {} - {}",
             title, artist
@@ -86,14 +93,79 @@ pub fn fetch_and_emit_lyrics(track: TrackIdentity, app_handle: AppHandle) {
             }
         };
 
-        // 推送给前端
-        if let Err(e) = app_handle.emit("lyrics-loaded", &document) {
-            eprintln!("[Lyrics] 发送歌词失败: {}", e);
-        } else {
-            emit_status(&app_handle, &document.track, LyricsLoadState::Loaded, None);
-            println!("[Lyrics] {:?} 歌词已发送至前端", document.source);
-        }
+        local_cache_put(&document);
+        emit_loaded(&app_handle, &document);
     });
+}
+
+fn emit_loaded(app_handle: &AppHandle, document: &LyricsDocument) {
+    // 推送给前端
+    if let Err(e) = app_handle.emit("lyrics-loaded", document) {
+        eprintln!("[Lyrics] 发送歌词失败: {e}");
+    } else {
+        emit_status(app_handle, &document.track, LyricsLoadState::Loaded, None);
+        println!("[Lyrics] {:?} 歌词已发送至前端", document.source);
+    }
+}
+
+fn local_cache_path() -> Option<std::path::PathBuf> {
+    std::env::var_os("LOCALAPPDATA").map(|path| {
+        std::path::PathBuf::from(path)
+            .join("AM-Desktop-Lyrics")
+            .join("lyrics-cache.json")
+    })
+}
+
+fn load_local_cache() -> Vec<LyricsDocument> {
+    let Some(path) = local_cache_path() else {
+        return Vec::new();
+    };
+    std::fs::read_to_string(path)
+        .ok()
+        .and_then(|text| serde_json::from_str(&text).ok())
+        .unwrap_or_default()
+}
+
+fn local_cache_get(track: &TrackIdentity) -> Option<LyricsDocument> {
+    let mut cache = LOCAL_LYRICS_CACHE.lock().ok()?;
+    let entries = cache.get_or_insert_with(load_local_cache);
+    let index = entries.iter().position(|entry| entry.track == *track)?;
+    let document = entries.remove(index);
+    entries.insert(0, document.clone());
+    persist_local_cache(entries);
+    Some(document)
+}
+
+fn local_cache_put(document: &LyricsDocument) {
+    let Ok(mut cache) = LOCAL_LYRICS_CACHE.lock() else {
+        return;
+    };
+    let entries = cache.get_or_insert_with(load_local_cache);
+    entries.retain(|entry| entry.track != document.track);
+    entries.insert(0, document.clone());
+    entries.truncate(LOCAL_CACHE_LIMIT);
+    persist_local_cache(entries);
+    println!("[LyricsCache] 已写入自身缓存: entries={}", entries.len());
+}
+
+fn persist_local_cache(entries: &[LyricsDocument]) {
+    let Some(path) = local_cache_path() else {
+        eprintln!("[LyricsCache] LOCALAPPDATA 不可用，无法持久化自身缓存");
+        return;
+    };
+    let Some(parent) = path.parent() else { return };
+    if let Err(error) = std::fs::create_dir_all(parent) {
+        eprintln!("[LyricsCache] 创建缓存目录失败: {error}");
+        return;
+    }
+    match serde_json::to_string(entries) {
+        Ok(text) => {
+            if let Err(error) = std::fs::write(path, text) {
+                eprintln!("[LyricsCache] 写入自身缓存失败: {error}");
+            }
+        }
+        Err(error) => eprintln!("[LyricsCache] 序列化自身缓存失败: {error}"),
+    }
 }
 
 fn emit_status(
