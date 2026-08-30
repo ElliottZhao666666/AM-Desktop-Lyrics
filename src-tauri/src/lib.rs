@@ -137,6 +137,16 @@ fn export_theme_file(path: String, name: String, css: String) -> Result<(), Stri
     std::fs::write(path, encoded).map_err(|error| format!("写入主题失败: {error}"))
 }
 
+fn keep_settings_window_reusable(window: &tauri::WebviewWindow) {
+    let reusable_window = window.clone();
+    window.on_window_event(move |event| {
+        if let tauri::WindowEvent::CloseRequested { api, .. } = event {
+            api.prevent_close();
+            let _ = reusable_window.hide();
+        }
+    });
+}
+
 #[tauri::command]
 fn open_settings(app: AppHandle) -> Result<(), String> {
     if let Some(window) = app.get_webview_window("settings") {
@@ -156,6 +166,7 @@ fn open_settings(app: AppHandle) -> Result<(), String> {
         .center()
         .build()
         .map_err(|error| error.to_string())?;
+    keep_settings_window_reusable(&window);
     window.set_focus().map_err(|error| error.to_string())
 }
 
@@ -321,6 +332,9 @@ pub fn run() {
                         ));
                     }
                 });
+            }
+            if let Some(window) = app.get_webview_window("settings") {
+                keep_settings_window_reusable(&window);
             }
             Ok(())
         })
