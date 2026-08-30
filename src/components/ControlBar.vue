@@ -18,6 +18,10 @@
         <button class="flex h-7 w-7 items-center justify-center transition-colors hover:text-pink-400 active:scale-90" @mousedown.stop @click="emit('prev')" title="上一曲"><SkipBack :size="16" /></button>
         <button class="flex h-7 w-7 items-center justify-center transition-colors hover:text-pink-400 active:scale-90" @mousedown.stop @click="emit('playPause')" title="播放/暂停"><Pause v-if="isPlaying" :size="17" /><Play v-else :size="17" /></button>
         <button class="flex h-7 w-7 items-center justify-center transition-colors hover:text-pink-400 active:scale-90" @mousedown.stop @click="emit('next')" title="下一曲"><SkipForward :size="16" /></button>
+        <span class="mx-1 h-4 w-px bg-white/25" aria-hidden="true" />
+        <button class="flex h-7 w-7 items-center justify-center transition-colors hover:text-pink-400 active:scale-90" @mousedown.stop @click="emit('lyricsEarlier')" title="歌词提前 500ms"><ArrowLeft :size="16" /></button>
+        <button class="flex h-7 w-7 items-center justify-center transition-colors hover:text-pink-400 active:scale-90" @mousedown.stop @click="emit('lyricsLater')" title="歌词延后 500ms"><ArrowRight :size="16" /></button>
+        <span class="mx-1 h-4 w-px bg-white/25" aria-hidden="true" />
         <button class="flex h-7 w-7 items-center justify-center transition-colors hover:text-pink-400 active:scale-90" @mousedown.stop @click="emit('toggleLock')" :title="locked ? '解锁窗口拖动' : '锁定窗口拖动'"><Lock v-if="locked" :size="15" /><Unlock v-else :size="15" /></button>
         <button class="flex h-7 w-7 items-center justify-center text-white/70 transition-colors hover:text-white active:scale-90" @mousedown.stop @click="emit('settings')" title="设置"><Settings :size="16" /></button>
         <button class="flex h-7 w-7 items-center justify-center transition-colors hover:text-red-400 active:scale-90" @mousedown.stop @click="emit('close')" title="关闭"><X :size="17" /></button>
@@ -32,7 +36,7 @@
 <script setup lang="ts">
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue';
 import { getCurrentWindow } from '@tauri-apps/api/window';
-import { Lock, Pause, Play, Settings, SkipBack, SkipForward, Unlock, X } from '@lucide/vue';
+import { ArrowLeft, ArrowRight, Lock, Pause, Play, Settings, SkipBack, SkipForward, Unlock, X } from '@lucide/vue';
 
 const props = defineProps<{
   show: boolean;
@@ -43,7 +47,7 @@ const props = defineProps<{
   durationMs: number;
   locked: boolean;
 }>();
-const emit = defineEmits(['prev', 'playPause', 'next', 'toggleLock', 'settings', 'close']);
+const emit = defineEmits(['prev', 'playPause', 'next', 'lyricsEarlier', 'lyricsLater', 'toggleLock', 'settings', 'close']);
 const progressPercent = computed(() => props.durationMs > 0 ? Math.min(props.positionMs / props.durationMs * 100, 100) : 0);
 const trackViewport = ref<HTMLElement | null>(null);
 const trackText = ref<HTMLElement | null>(null);

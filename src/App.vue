@@ -1,22 +1,28 @@
 <template>
   <SettingsView v-if="isSettingsWindow" />
   <div v-else
-    class="w-screen h-screen relative overflow-hidden bg-transparent"
+    class="lyrics-window w-screen h-screen relative overflow-hidden"
+    :class="{ 'is-interactive': isHovering }"
     @mouseenter="isHovering = true"
     @mouseleave="isHovering = false"
     @contextmenu.prevent
   >
+    <template v-if="isHovering && !controlsLocked">
+      <div v-for="edge in resizeEdges" :key="edge.direction" class="resize-edge" :class="edge.className" @mousedown.stop.prevent="startResize(edge.direction)" />
+    </template>
     <ControlBar 
       :show="isHovering" 
       :title="mediaTitle" 
       :artist="mediaArtist"
       :is-playing="isPlaying"
-      :position-ms="positionMs"
+      :position-ms="displayPositionMs"
       :duration-ms="durationMs"
       :locked="controlsLocked"
       @prev="onPrev"
       @playPause="onPlayPause"
       @next="onNext"
+      @lyricsEarlier="adjustLyricsOffset(-500)"
+      @lyricsLater="adjustLyricsOffset(500)"
       @settings="onSettings"
       @toggleLock="controlsLocked = !controlsLocked"
       @close="onHide"
@@ -25,7 +31,7 @@
       :title="mediaTitle"
       :artist="mediaArtist"
       :is-playing="isPlaying"
-      :position-ms="positionMs"
+      :position-ms="displayPositionMs"
       :lyrics="currentLyrics"
       :lyrics-state="lyricsState"
       :lyrics-message="lyricsMessage"
@@ -34,7 +40,7 @@
 </template>
 
 <script setup lang="ts">
-import { ref, onMounted, onUnmounted } from 'vue';
+import { computed, ref, onMounted, onUnmounted } from 'vue';
 import { invoke } from '@tauri-apps/api/core';
 import { listen, type UnlistenFn } from '@tauri-apps/api/event';
 import { getCurrentWindow } from '@tauri-apps/api/window';
@@ -49,6 +55,7 @@ import type {
   MediaPositionPayload,
   MediaSnapshotPayload,
   MediaStatePayload,
+  RuntimeLyricsTimeOffset,
 } from './types';
 
 const isSettingsWindow = getCurrentWindow().label === 'settings';
@@ -62,6 +69,8 @@ const mediaArtist = ref('');
 const isPlaying = ref(false);
 const positionMs = ref(0);
 const durationMs = ref(0);
+const lyricsTimeOffsetMs = ref(0);
+let lyricsTimeOffsetRevision = -1;
 const currentLyrics = ref<LyricsDocument | null>(null);
 const lyricsState = ref<LyricsLoadState>('loading');
 const lyricsMessage = ref<string | null>(null);
@@ -75,10 +84,26 @@ let unlistenLyricsStatus: UnlistenFn | null = null;
 let animationFrameId: number | null = null;
 let unlistenTrayLock: UnlistenFn | null = null;
 let unlistenSettings: UnlistenFn | null = null;
+let unlistenLyricsTimeOffset: UnlistenFn | null = null;
 let clockAnchorPositionMs = 0;
 let clockAnchorTime = performance.now();
 
 const CLOCK_SNAP_THRESHOLD_MS = 300;
+const displayPositionMs = computed(() => {
+  const adjusted = positionMs.value - lyricsTimeOffsetMs.value;
+  return Math.max(0, durationMs.value > 0 ? Math.min(adjusted, durationMs.value) : adjusted);
+});
+type ResizeDirection = 'East' | 'North' | 'NorthEast' | 'NorthWest' | 'South' | 'SouthEast' | 'SouthWest' | 'West';
+const resizeEdges: Array<{ direction: ResizeDirection; className: string }> = [
+  { direction: 'North', className: 'resize-north' },
+  { direction: 'South', className: 'resize-south' },
+  { direction: 'West', className: 'resize-west' },
+  { direction: 'East', className: 'resize-east' },
+  { direction: 'NorthWest', className: 'resize-north-west' },
+  { direction: 'NorthEast', className: 'resize-north-east' },
+  { direction: 'SouthWest', className: 'resize-south-west' },
+  { direction: 'SouthEast', className: 'resize-south-east' },
+];
 
 function applyTheme(css: string) {
   let style = document.querySelector<HTMLStyleElement>('#amdl-runtime-theme');
@@ -88,6 +113,12 @@ function applyTheme(css: string) {
     document.head.appendChild(style);
   }
   style.textContent = css;
+}
+
+function applyLyricsTimeOffset(payload: RuntimeLyricsTimeOffset) {
+  if (payload.revision < lyricsTimeOffsetRevision) return;
+  lyricsTimeOffsetRevision = payload.revision;
+  lyricsTimeOffsetMs.value = payload.offsetMs;
 }
 
 function interpolatedPosition(now = performance.now()) {
@@ -147,9 +178,13 @@ function applyMediaState(payload: MediaStatePayload) {
 onMounted(async () => {
   if (isSettingsWindow) return;
 
+  unlistenLyricsTimeOffset = await listen<RuntimeLyricsTimeOffset>('lyrics-time-offset-changed', (event) => {
+    applyLyricsTimeOffset(event.payload);
+  });
   try {
     const settings = await invoke<AppSettings>('get_settings');
     applyTheme(settings.themeCss);
+    applyLyricsTimeOffset(await invoke<RuntimeLyricsTimeOffset>('get_runtime_lyrics_time_offset'));
   } catch (error) {
     console.error('get_settings failed:', error);
   }
@@ -200,11 +235,28 @@ onUnmounted(() => {
   unlistenLyricsStatus?.();
   unlistenTrayLock?.();
   unlistenSettings?.();
+  unlistenLyricsTimeOffset?.();
   if (animationFrameId !== null) cancelAnimationFrame(animationFrameId);
 });
 
 function sameTrack(title: string, artist: string) {
   return title === mediaTitle.value && artist === mediaArtist.value;
+}
+
+async function startResize(direction: ResizeDirection) {
+  try {
+    await getCurrentWindow().startResizeDragging(direction);
+  } catch (error) {
+    console.error('window resize failed:', error);
+  }
+}
+
+async function adjustLyricsOffset(deltaMs: number) {
+  try {
+    applyLyricsTimeOffset(await invoke<RuntimeLyricsTimeOffset>('adjust_runtime_lyrics_time_offset', { deltaMs }));
+  } catch (error) {
+    console.error('adjust_runtime_lyrics_time_offset failed:', error);
+  }
 }
 
 // ==========================================
@@ -247,3 +299,51 @@ const onHide = async () => {
   await getCurrentWindow().hide();
 };
 </script>
+
+<style scoped>
+.lyrics-window {
+  background: transparent;
+  transition: background-color 160ms ease;
+}
+
+.lyrics-window.is-interactive {
+  background: rgb(0 0 0 / 10%);
+}
+
+.resize-edge {
+  position: absolute;
+  z-index: 100;
+}
+
+.resize-north,
+.resize-south {
+  right: 8px;
+  left: 8px;
+  height: 6px;
+}
+
+.resize-west,
+.resize-east {
+  top: 8px;
+  bottom: 8px;
+  width: 6px;
+}
+
+.resize-north { top: 0; cursor: n-resize; }
+.resize-south { bottom: 0; cursor: s-resize; }
+.resize-west { left: 0; cursor: w-resize; }
+.resize-east { right: 0; cursor: e-resize; }
+
+.resize-north-west,
+.resize-north-east,
+.resize-south-west,
+.resize-south-east {
+  width: 10px;
+  height: 10px;
+}
+
+.resize-north-west { top: 0; left: 0; cursor: nw-resize; }
+.resize-north-east { top: 0; right: 0; cursor: ne-resize; }
+.resize-south-west { bottom: 0; left: 0; cursor: sw-resize; }
+.resize-south-east { right: 0; bottom: 0; cursor: se-resize; }
+</style>

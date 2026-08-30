@@ -13,7 +13,9 @@
       <header class="settings-header"><div><p class="eyebrow">AMDL</p><h1>{{ currentSection.label }}</h1></div></header>
 
       <div v-if="activeSection === 'general'" class="settings-list">
+        <div class="setting-row"><div><strong>歌词时间偏移 (ms)</strong><p>调整后即时生效；点击“应用”后写入配置，并在下次运行时读取。</p></div><input v-model.number="settings.lyricsTimeOffsetMs" class="offset-input" type="number" step="10" @input="applyRuntimeLyricsOffset" /></div>
         <div class="setting-row"><div><strong>自动转换繁体歌词到简体</strong><p>Apple Music 缓存命中时自动转换华语歌词。</p></div><button class="switch" :class="{ on: settings.autoConvertTraditionalToSimplified }" role="switch" :aria-checked="settings.autoConvertTraditionalToSimplified" @click="settings.autoConvertTraditionalToSimplified = !settings.autoConvertTraditionalToSimplified"><span /></button></div>
+        <div class="setting-row"><div><strong>记忆歌词窗口位置和大小</strong><p>保存拖动和缩放后的歌词窗口状态。</p></div><button class="switch" :class="{ on: settings.rememberLyricsWindowBounds }" role="switch" :aria-checked="settings.rememberLyricsWindowBounds" @click="settings.rememberLyricsWindowBounds = !settings.rememberLyricsWindowBounds"><span /></button></div>
         <div class="setting-row"><div><strong>歌词缓存歌曲数</strong><p>保存最近播放的歌词，重复播放时优先读取。</p></div><input v-model.number="settings.localCacheLimit" class="number-input" type="number" min="1" max="50" step="1" /></div>
       </div>
 
@@ -74,41 +76,85 @@
 </template>
 
 <script setup lang="ts">
-import { computed, onMounted, ref } from 'vue';
+import { computed, onMounted, onUnmounted, ref } from 'vue';
 import { invoke } from '@tauri-apps/api/core';
+import { listen, type UnlistenFn } from '@tauri-apps/api/event';
 import { open, save } from '@tauri-apps/plugin-dialog';
 import { getCurrentWindow } from '@tauri-apps/api/window';
 import { FolderOpen, Info, Palette, Save, Settings2 } from '@lucide/vue';
-import type { AppSettings, ThemeFile } from '../types';
+import type { AppSettings, RuntimeLyricsTimeOffset, ThemeFile } from '../types';
 import { buildThemeCss, cloneEditor, DEFAULT_EDITOR, PRESETS, type ThemeEditor } from '../theme';
 import TextStyleEditor from './TextStyleEditor.vue';
 
 const sections = [{ id: 'general', label: '常用', icon: Settings2 }, { id: 'appearance', label: '外观', icon: Palette }, { id: 'about', label: '关于', icon: Info }] as const;
 const activeSection = ref<typeof sections[number]['id']>('general');
-const settings = ref<AppSettings>({ autoConvertTraditionalToSimplified: true, localCacheLimit: 10, themeName: 'AMDL 默认', themeCss: buildThemeCss(DEFAULT_EDITOR) });
+const settings = ref<AppSettings>({
+  autoConvertTraditionalToSimplified: true,
+  localCacheLimit: 10,
+  themeName: 'AMDL 默认',
+  themeCss: buildThemeCss(DEFAULT_EDITOR),
+  lyricsTimeOffsetMs: 0,
+  rememberLyricsWindowBounds: false,
+  lyricsWindowBounds: null,
+});
 const editor = ref<ThemeEditor>(cloneEditor(DEFAULT_EDITOR));
 const selectedPreset = ref('default');
 const customFontFamily = ref('');
 const systemFonts = ref<string[]>(['Microsoft YaHei UI']);
 const message = ref('');
 const currentSection = computed(() => sections.find((item) => item.id === activeSection.value) ?? sections[0]);
+let unlistenLyricsTimeOffset: UnlistenFn | null = null;
+let lyricsTimeOffsetRevision = -1;
+let latestLyricsTimeOffset: RuntimeLyricsTimeOffset = { offsetMs: 0, revision: -1 };
+let pendingLyricsOffsetUpdate: Promise<void> = Promise.resolve();
+
+function applyLyricsTimeOffset(payload: RuntimeLyricsTimeOffset) {
+  if (payload.revision < lyricsTimeOffsetRevision) return;
+  lyricsTimeOffsetRevision = payload.revision;
+  latestLyricsTimeOffset = payload;
+  settings.value.lyricsTimeOffsetMs = payload.offsetMs;
+}
 
 onMounted(async () => {
   try {
-    const [loadedSettings, fonts] = await Promise.all([
+    unlistenLyricsTimeOffset = await listen<RuntimeLyricsTimeOffset>('lyrics-time-offset-changed', (event) => {
+      applyLyricsTimeOffset(event.payload);
+    });
+    const [loadedSettings, runtimeOffset, fonts] = await Promise.all([
       invoke<AppSettings>('get_settings'),
+      invoke<RuntimeLyricsTimeOffset>('get_runtime_lyrics_time_offset'),
       invoke<string[]>('get_system_fonts'),
     ]);
     settings.value = loadedSettings;
+    applyLyricsTimeOffset(runtimeOffset);
+    applyLyricsTimeOffset(latestLyricsTimeOffset);
     systemFonts.value = fonts.length > 0 ? fonts : systemFonts.value;
     if (!systemFonts.value.includes(editor.value.fontFamily)) systemFonts.value.unshift(editor.value.fontFamily);
   } catch (error) { message.value = String(error); }
 });
 
+onUnmounted(() => unlistenLyricsTimeOffset?.());
+
 function syncCss() { settings.value.themeCss = buildThemeCss(editor.value); selectedPreset.value = 'custom'; }
 function syncCustomFont() { editor.value.fontFamily = customFontFamily.value || 'Microsoft YaHei UI'; syncCss(); }
 function applyPreset() { const preset = PRESETS.find((item) => item.id === selectedPreset.value); if (!preset) return; editor.value = cloneEditor(preset.editor); settings.value.themeName = preset.name; settings.value.themeCss = buildThemeCss(editor.value); }
 function resetDefault() { selectedPreset.value = 'default'; applyPreset(); }
+
+function applyRuntimeLyricsOffset() {
+  const rawValue: unknown = settings.value.lyricsTimeOffsetMs;
+  if (rawValue === '') return;
+  const value = Number(rawValue);
+  if (!Number.isFinite(value)) return;
+  settings.value.lyricsTimeOffsetMs = Math.trunc(value);
+  const offsetMs = settings.value.lyricsTimeOffsetMs;
+  pendingLyricsOffsetUpdate = pendingLyricsOffsetUpdate.then(async () => {
+    try {
+      applyLyricsTimeOffset(await invoke<RuntimeLyricsTimeOffset>('set_runtime_lyrics_time_offset', { offsetMs }));
+    } catch (error) {
+      message.value = String(error);
+    }
+  });
+}
 
 async function importTheme() {
   const path = await open({ multiple: false, filters: [{ name: 'AMDL 主题', extensions: ['amdlcss'] }] });
@@ -122,6 +168,12 @@ async function exportTheme() {
 }
 async function saveSettings() {
   settings.value.localCacheLimit = Math.max(1, Math.min(50, Math.round(settings.value.localCacheLimit || 10)));
+  const rawLyricsTimeOffset: unknown = settings.value.lyricsTimeOffsetMs;
+  if (rawLyricsTimeOffset === '' || !Number.isFinite(Number(rawLyricsTimeOffset))) {
+    settings.value.lyricsTimeOffsetMs = latestLyricsTimeOffset.offsetMs;
+  }
+  await pendingLyricsOffsetUpdate;
+  settings.value.lyricsTimeOffsetMs = latestLyricsTimeOffset.offsetMs;
   try { await invoke('save_settings', { settings: settings.value }); message.value = '已应用'; setTimeout(() => { message.value = ''; }, 1800); } catch (error) { message.value = String(error); }
 }
 function closeWindow() { getCurrentWindow().hide(); }
@@ -134,5 +186,5 @@ function closeWindow() { getCurrentWindow().hide(); }
 .appearance-workspace { min-height: 0; flex: 1; display: flex; flex-direction: column; }.appearance-toolbar { display: flex; align-items: end; gap: 14px; padding: 14px 0; border-bottom: 1px solid #dedee3; }.appearance-toolbar label { display: grid; gap: 5px; font-size: 11px; color: #777780; }.appearance-toolbar select { width: 150px; }.theme-name { width: 180px; }.file-actions { margin-left: auto; display: flex; gap: 6px; }.icon-command { height: 31px; display: flex; align-items: center; gap: 6px; border: 1px solid #ceced4; border-radius: 5px; padding: 0 10px; background: #fff; color: #55555e; cursor: pointer; }
 .appearance-grid { min-height: 0; flex: 1; display: grid; grid-template-columns: minmax(470px, 1.08fr) minmax(360px, .92fr); gap: 24px; padding-top: 14px; }.editor-pane { min-height: 0; overflow-y: auto; padding: 0 10px 8px 0; }.editor-section { padding: 0 0 16px; margin-bottom: 16px; border-bottom: 1px solid #dfdfe4; }.editor-section h2 { margin: 0 0 11px; font-size: 13px; color: #4d4d55; }.control-grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 10px 12px; }.control-grid label { min-width: 0; display: grid; gap: 5px; color: #7b7b84; font-size: 11px; }.control-grid label.wide { grid-column: span 2; }.control-grid input:not([type="checkbox"]):not([type="range"]), .control-grid select, .appearance-toolbar input, .appearance-toolbar select { box-sizing: border-box; width: 100%; height: 31px; border: 1px solid #cfcfd5; border-radius: 4px; padding: 0 7px; background: white; color: #33333a; }.control-grid input[type="color"] { padding: 3px; }.control-grid input[type="range"] { width: 100%; }.check-label { display: flex !important; align-items: center; gap: 7px !important; min-height: 31px; color: #55555e !important; }.check-label input { accent-color: #d13c86; }.range-value { color: #55555e; }.paint-controls { grid-template-columns: repeat(3, minmax(0, 1fr)); }
 .preview-pane { position: sticky; top: 0; align-self: start; min-height: 0; display: flex; flex-direction: column; }.preview-title, .source-header { height: 28px; display: flex; align-items: center; justify-content: space-between; color: #686871; font-size: 12px; font-weight: 650; }.theme-preview { position: relative; height: 176px; display: flex; align-items: center; overflow: hidden; background: #15151a; border: 1px solid #2e2e35; }.theme-preview::before { content: ''; position: absolute; inset: 0; background: linear-gradient(135deg, #23232b, #0d0d11 60%, #2b1823); }.theme-preview .amdl-lyrics { position: relative; width: 100%; padding: 20px; box-sizing: border-box; }.preview-progress { position: absolute; right: 0; bottom: 0; left: 0; height: 3px; background: #ffffff20; }.preview-progress > div { height: 100%; }.source-header { margin-top: 10px; }.text-command { border: 0; background: transparent; color: #bd2c76; cursor: pointer; }.css-editor { min-height: 110px; flex: 1; resize: none; border: 1px solid #cfcfd5; border-radius: 5px; padding: 10px; background: #fff; color: #33333a; font: 11px/1.5 Consolas, monospace; user-select: text; }
-.number-input { width: 58px; padding: 7px 8px; border: 1px solid #cfcfd5; border-radius: 5px; text-align: center; }.about-panel { flex: 1; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 10px; color: #55555e; }.about-logo { color: #d9428b; font-size: 35px; font-weight: 800; }.settings-footer { padding-top: 14px; display: flex; justify-content: space-between; align-items: center; }.save-message { color: #bf357c; font-size: 12px; }.footer-actions { display: flex; gap: 9px; }.button { min-width: 70px; height: 32px; border-radius: 5px; padding: 0 14px; font-size: 13px; cursor: pointer; }.button.secondary { border: 1px solid #d0d0d5; background: white; color: #5d5d65; }.button.primary { border: 0; background: #d13c86; color: white; }
+.number-input { width: 58px; padding: 7px 8px; border: 1px solid #cfcfd5; border-radius: 5px; text-align: center; }.offset-input { width: 108px; padding: 7px 8px; border: 1px solid #cfcfd5; border-radius: 5px; text-align: right; }.about-panel { flex: 1; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 10px; color: #55555e; }.about-logo { color: #d9428b; font-size: 35px; font-weight: 800; }.settings-footer { padding-top: 14px; display: flex; justify-content: space-between; align-items: center; }.save-message { color: #bf357c; font-size: 12px; }.footer-actions { display: flex; gap: 9px; }.button { min-width: 70px; height: 32px; border-radius: 5px; padding: 0 14px; font-size: 13px; cursor: pointer; }.button.secondary { border: 1px solid #d0d0d5; background: white; color: #5d5d65; }.button.primary { border: 0; background: #d13c86; color: white; }
 </style>

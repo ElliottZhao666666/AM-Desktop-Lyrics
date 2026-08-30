@@ -21,15 +21,17 @@
         "shadow": false,
         "skipTaskbar": true,
         "alwaysOnTop": true,
-        "resizable": false
+        "resizable": true,
+        "minWidth": 420,
+        "minHeight": 100
       },
       {
         "label": "settings",
         "title": "AMDL 设置",
         "width": 1160,
-        "height": 780,
+        "height": 680,
         "minWidth": 1040,
-        "minHeight": 680,
+        "minHeight": 580,
         "visible": false,
         "decorations": true,
         "resizable": false,

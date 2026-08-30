@@ -8,7 +8,7 @@
         <div class="amdl-lyric-line is-active">{{ displayText }}</div>
       </template>
       <template v-else-if="displayLines.length">
-        <div v-for="(line, index) in displayLines" :key="`${line.begin_ms}-${line.text}`" class="amdl-lyric-line" :class="{ 'is-active': index === displayLines.length - 1 }">
+        <div v-for="line in displayLines" :key="`${line.begin_ms}-${line.text}`" class="amdl-lyric-line is-active">
           {{ line.text }}
         </div>
       </template>

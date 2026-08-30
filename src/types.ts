@@ -51,11 +51,26 @@ export interface LyricsStatusPayload {
   message: string | null;
 }
 
+export interface LyricsWindowBounds {
+  x: number;
+  y: number;
+  width: number;
+  height: number;
+}
+
+export interface RuntimeLyricsTimeOffset {
+  offsetMs: number;
+  revision: number;
+}
+
 export interface AppSettings {
   autoConvertTraditionalToSimplified: boolean;
   localCacheLimit: number;
   themeName: string;
   themeCss: string;
+  lyricsTimeOffsetMs: number;
+  rememberLyricsWindowBounds: boolean;
+  lyricsWindowBounds: LyricsWindowBounds | null;
 }
 
 export interface ThemeFile {
