@@ -15,8 +15,8 @@ static EXIT_REQUESTED: AtomicBool = AtomicBool::new(false);
 const DEFAULT_THEME_NAME: &str = "AMDL 默认";
 const DEFAULT_THEME_CSS: &str = r#"
 .amdl-lyrics { font-family: "Microsoft YaHei UI", "Segoe UI", sans-serif; font-size: 32px; font-weight: 800; font-style: normal; text-align: center; opacity: 1; }
-.amdl-lyric-line { color: #d7d7de; -webkit-text-stroke: 0px transparent; text-shadow: 0 1px 2px #00000099; }
-.amdl-lyric-line.is-active { color: transparent; background: linear-gradient(90deg, #fb7185, #d946ef, #8b5cf6); background-clip: text; -webkit-background-clip: text; -webkit-text-fill-color: transparent; -webkit-text-stroke: 0px transparent; text-shadow: 0 1px 2px #000000aa, 0 0 6px #d946ef66; }
+.amdl-lyric-line { color: #d7d7de; }
+.amdl-lyric-line.is-active { color: transparent; background: linear-gradient(90deg, #fb7185, #d946ef, #8b5cf6); background-clip: text; -webkit-background-clip: text; -webkit-text-fill-color: transparent; }
 .amdl-progress-fill { background: linear-gradient(90deg, #fb7185, #d946ef); }
 "#;
 
@@ -147,6 +147,38 @@ fn keep_settings_window_reusable(window: &tauri::WebviewWindow) {
     });
 }
 
+#[cfg(target_os = "windows")]
+#[tauri::command]
+fn get_system_fonts() -> Result<Vec<String>, String> {
+    use std::collections::BTreeSet;
+    use winreg::enums::HKEY_LOCAL_MACHINE;
+    use winreg::RegKey;
+
+    let key = RegKey::predef(HKEY_LOCAL_MACHINE)
+        .open_subkey("SOFTWARE\\Microsoft\\Windows NT\\CurrentVersion\\Fonts")
+        .map_err(|error| format!("读取系统字体注册表失败: {error}"))?;
+    let mut fonts = BTreeSet::new();
+    for item in key.enum_values() {
+        let (name, _) = item.map_err(|error| format!("读取系统字体项失败: {error}"))?;
+        let cleaned = name
+            .trim()
+            .trim_end_matches("(TrueType)")
+            .trim_end_matches("(OpenType)")
+            .trim()
+            .to_string();
+        if !cleaned.is_empty() {
+            fonts.insert(cleaned);
+        }
+    }
+    Ok(fonts.into_iter().collect())
+}
+
+#[cfg(not(target_os = "windows"))]
+#[tauri::command]
+fn get_system_fonts() -> Result<Vec<String>, String> {
+    Ok(Vec::new())
+}
+
 #[tauri::command]
 fn open_settings(app: AppHandle) -> Result<(), String> {
     if let Some(window) = app.get_webview_window("settings") {
@@ -156,8 +188,8 @@ fn open_settings(app: AppHandle) -> Result<(), String> {
     }
     let window = WebviewWindowBuilder::new(&app, "settings", WebviewUrl::App("index.html".into()))
         .title("AMDL 设置")
-        .inner_size(920.0, 700.0)
-        .min_inner_size(820.0, 620.0)
+        .inner_size(1160.0, 780.0)
+        .min_inner_size(1040.0, 680.0)
         .resizable(false)
         .maximizable(false)
         .minimizable(true)
@@ -348,6 +380,7 @@ pub fn run() {
             import_theme_file,
             export_theme_file,
             open_settings,
+            get_system_fonts,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

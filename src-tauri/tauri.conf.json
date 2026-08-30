@@ -26,9 +26,9 @@
       {
         "label": "settings",
         "title": "AMDL 设置",
-        "width": 1040,
+        "width": 1160,
         "height": 780,
-        "minWidth": 900,
+        "minWidth": 1040,
         "minHeight": 680,
         "visible": false,
         "decorations": true,

@@ -56,7 +56,7 @@
           <div class="preview-pane">
             <div class="preview-title">预览</div>
             <div class="theme-preview">
-              <div class="amdl-lyrics"><div class="amdl-lyrics-stack"><div class="amdl-lyric-line">昨日的风停在窗外</div><div class="amdl-lyric-line is-active">此刻听见你的声音</div></div></div>
+              <div class="amdl-lyrics"><div class="amdl-lyrics-stack"><div class="amdl-lyric-line">昨日的风停在窗外</div><div class="amdl-lyric-line is-active">此刻听见你在 Say Hi</div></div></div>
               <div class="preview-progress"><div class="amdl-progress-fill" style="width: 62%" /></div>
             </div>
             <div class="source-header"><span>CSS 源码</span><button class="text-command" @click="resetDefault">恢复默认</button></div>
@@ -74,31 +74,14 @@
 </template>
 
 <script setup lang="ts">
-import { computed, defineComponent, h, onMounted, ref, type PropType } from 'vue';
+import { computed, onMounted, ref } from 'vue';
 import { invoke } from '@tauri-apps/api/core';
 import { open, save } from '@tauri-apps/plugin-dialog';
 import { getCurrentWindow } from '@tauri-apps/api/window';
 import { FolderOpen, Info, Palette, Save, Settings2 } from '@lucide/vue';
 import type { AppSettings, ThemeFile } from '../types';
-import { buildThemeCss, cloneEditor, DEFAULT_EDITOR, PRESETS, type TextPaint, type ThemeEditor } from '../theme';
-
-const TextStyleEditor = defineComponent({
-  props: { title: { type: String, required: true }, paint: { type: Object as PropType<TextPaint>, required: true } },
-  emits: ['change'],
-  setup(props, { emit }) {
-    const field = (text: string, child: ReturnType<typeof h>) => h('label', [text, child]);
-    const input = (key: keyof TextPaint, attrs: Record<string, unknown>) => h('input', { ...attrs, value: props.paint[key], onInput: (event: Event) => { const target = event.target as HTMLInputElement; (props.paint as unknown as Record<string, unknown>)[key] = attrs.type === 'number' ? Number(target.value) : target.value; emit('change'); } });
-    return () => h('section', { class: 'editor-section' }, [h('h2', props.title), h('div', { class: 'control-grid paint-controls' }, [
-      field('填充', h('select', { value: props.paint.mode, onChange: (event: Event) => { props.paint.mode = (event.target as HTMLSelectElement).value as TextPaint['mode']; emit('change'); } }, [h('option', { value: 'solid' }, '纯色'), h('option', { value: 'gradient' }, '线性渐变')])),
-      field('颜色', input('color', { type: 'color' })),
-      ...(props.paint.mode === 'gradient' ? [field('结束色', input('colorEnd', { type: 'color' })), field('角度', input('angle', { type: 'number', min: 0, max: 360 }))] : []),
-      field('描边', input('strokeWidth', { type: 'number', min: 0, max: 8, step: .5 })), field('描边色', input('strokeColor', { type: 'color' })),
-      field('阴影 X', input('shadowX', { type: 'number', min: -30, max: 30 })), field('阴影 Y', input('shadowY', { type: 'number', min: -30, max: 30 })),
-      field('阴影模糊', input('shadowBlur', { type: 'number', min: 0, max: 40 })), field('阴影色', input('shadowColor', { type: 'color' })),
-      field('发光', input('glowBlur', { type: 'number', min: 0, max: 50 })), field('发光色', input('glowColor', { type: 'color' })),
-    ])]);
-  },
-});
+import { buildThemeCss, cloneEditor, DEFAULT_EDITOR, PRESETS, type ThemeEditor } from '../theme';
+import TextStyleEditor from './TextStyleEditor.vue';
 
 const sections = [{ id: 'general', label: '常用', icon: Settings2 }, { id: 'appearance', label: '外观', icon: Palette }, { id: 'about', label: '关于', icon: Info }] as const;
 const activeSection = ref<typeof sections[number]['id']>('general');
@@ -106,11 +89,21 @@ const settings = ref<AppSettings>({ autoConvertTraditionalToSimplified: true, lo
 const editor = ref<ThemeEditor>(cloneEditor(DEFAULT_EDITOR));
 const selectedPreset = ref('default');
 const customFontFamily = ref('');
-const systemFonts = ['Microsoft YaHei UI', 'Microsoft YaHei', 'SimSun', 'SimHei', 'KaiTi', 'Arial', 'Segoe UI', 'Calibri', 'Consolas', '等线', '仿宋'];
+const systemFonts = ref<string[]>(['Microsoft YaHei UI']);
 const message = ref('');
 const currentSection = computed(() => sections.find((item) => item.id === activeSection.value) ?? sections[0]);
 
-onMounted(async () => { try { settings.value = await invoke<AppSettings>('get_settings'); } catch (error) { message.value = String(error); } });
+onMounted(async () => {
+  try {
+    const [loadedSettings, fonts] = await Promise.all([
+      invoke<AppSettings>('get_settings'),
+      invoke<string[]>('get_system_fonts'),
+    ]);
+    settings.value = loadedSettings;
+    systemFonts.value = fonts.length > 0 ? fonts : systemFonts.value;
+    if (!systemFonts.value.includes(editor.value.fontFamily)) systemFonts.value.unshift(editor.value.fontFamily);
+  } catch (error) { message.value = String(error); }
+});
 
 function syncCss() { settings.value.themeCss = buildThemeCss(editor.value); selectedPreset.value = 'custom'; }
 function syncCustomFont() { editor.value.fontFamily = customFontFamily.value || 'Microsoft YaHei UI'; syncCss(); }
@@ -139,7 +132,7 @@ function closeWindow() { getCurrentWindow().hide(); }
 .settings-sidebar { width: 176px; flex: 0 0 176px; padding: 28px 14px; box-sizing: border-box; background: #e9e9ed; border-right: 1px solid #d8d8dd; }.brand-mark { margin: 0 14px 30px; font-size: 18px; font-weight: 750; color: #d9428b; }.nav-item { width: 100%; height: 42px; display: flex; align-items: center; gap: 11px; border: 0; border-radius: 7px; padding: 0 13px; color: #55555e; background: transparent; font-size: 14px; cursor: pointer; }.nav-item:hover { background: #dedee4; }.nav-item.active { color: #bd2c76; background: #fff; box-shadow: 0 1px 3px #00000012; font-weight: 650; }
 .settings-content { min-width: 0; flex: 1; padding: 28px 34px 22px; box-sizing: border-box; display: flex; flex-direction: column; }.settings-header { padding-bottom: 18px; border-bottom: 1px solid #dedee3; }.eyebrow { margin: 0 0 5px; color: #c13a7c; font-size: 11px; font-weight: 700; }.settings-header h1 { margin: 0; font-size: 22px; }.settings-list { padding-top: 8px; }.setting-row { min-height: 76px; display: flex; align-items: center; justify-content: space-between; gap: 20px; border-bottom: 1px solid #e1e1e5; }.setting-row strong { font-size: 14px; }.setting-row p { margin: 6px 0 0; color: #85858e; font-size: 12px; }.switch { width: 38px; height: 22px; padding: 2px; border: 0; border-radius: 12px; background: #c6c6cc; cursor: pointer; }.switch span { display: block; width: 18px; height: 18px; border-radius: 50%; background: white; transition: transform .18s; }.switch.on { background: #d53e8b; }.switch.on span { transform: translateX(16px); }
 .appearance-workspace { min-height: 0; flex: 1; display: flex; flex-direction: column; }.appearance-toolbar { display: flex; align-items: end; gap: 14px; padding: 14px 0; border-bottom: 1px solid #dedee3; }.appearance-toolbar label { display: grid; gap: 5px; font-size: 11px; color: #777780; }.appearance-toolbar select { width: 150px; }.theme-name { width: 180px; }.file-actions { margin-left: auto; display: flex; gap: 6px; }.icon-command { height: 31px; display: flex; align-items: center; gap: 6px; border: 1px solid #ceced4; border-radius: 5px; padding: 0 10px; background: #fff; color: #55555e; cursor: pointer; }
-.appearance-grid { min-height: 0; flex: 1; display: grid; grid-template-columns: minmax(470px, 1.08fr) minmax(360px, .92fr); gap: 24px; padding-top: 14px; }.editor-pane { min-height: 0; overflow-y: auto; padding: 0 10px 8px 0; }.editor-section { padding: 0 0 16px; margin-bottom: 16px; border-bottom: 1px solid #dfdfe4; }.editor-section h2 { margin: 0 0 11px; font-size: 13px; color: #4d4d55; }.control-grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 10px 12px; }.control-grid label { min-width: 0; display: grid; gap: 5px; color: #7b7b84; font-size: 11px; }.control-grid label.wide { grid-column: span 2; }.control-grid input:not([type="checkbox"]):not([type="range"]), .control-grid select, .appearance-toolbar input, .appearance-toolbar select { box-sizing: border-box; width: 100%; height: 31px; border: 1px solid #cfcfd5; border-radius: 4px; padding: 0 7px; background: white; color: #33333a; }.control-grid input[type="color"] { padding: 3px; }.control-grid input[type="range"] { width: 100%; }.check-label { align-content: end; grid-template-columns: auto 1fr !important; align-items: center; padding-bottom: 7px; }.range-value { color: #55555e; }.paint-controls { grid-template-columns: repeat(3, minmax(0, 1fr)); }
-.preview-pane { min-height: 0; display: flex; flex-direction: column; }.preview-title, .source-header { height: 28px; display: flex; align-items: center; justify-content: space-between; color: #686871; font-size: 12px; font-weight: 650; }.theme-preview { position: relative; height: 176px; display: flex; align-items: center; overflow: hidden; background: #15151a; border: 1px solid #2e2e35; }.theme-preview::before { content: ''; position: absolute; inset: 0; background: linear-gradient(135deg, #23232b, #0d0d11 60%, #2b1823); }.theme-preview .amdl-lyrics { position: relative; width: 100%; padding: 20px; box-sizing: border-box; }.preview-progress { position: absolute; right: 0; bottom: 0; left: 0; height: 3px; background: #ffffff20; }.preview-progress > div { height: 100%; }.source-header { margin-top: 10px; }.text-command { border: 0; background: transparent; color: #bd2c76; cursor: pointer; }.css-editor { min-height: 110px; flex: 1; resize: none; border: 1px solid #cfcfd5; border-radius: 5px; padding: 10px; background: #fff; color: #33333a; font: 11px/1.5 Consolas, monospace; user-select: text; }
+.appearance-grid { min-height: 0; flex: 1; display: grid; grid-template-columns: minmax(470px, 1.08fr) minmax(360px, .92fr); gap: 24px; padding-top: 14px; }.editor-pane { min-height: 0; overflow-y: auto; padding: 0 10px 8px 0; }.editor-section { padding: 0 0 16px; margin-bottom: 16px; border-bottom: 1px solid #dfdfe4; }.editor-section h2 { margin: 0 0 11px; font-size: 13px; color: #4d4d55; }.control-grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 10px 12px; }.control-grid label { min-width: 0; display: grid; gap: 5px; color: #7b7b84; font-size: 11px; }.control-grid label.wide { grid-column: span 2; }.control-grid input:not([type="checkbox"]):not([type="range"]), .control-grid select, .appearance-toolbar input, .appearance-toolbar select { box-sizing: border-box; width: 100%; height: 31px; border: 1px solid #cfcfd5; border-radius: 4px; padding: 0 7px; background: white; color: #33333a; }.control-grid input[type="color"] { padding: 3px; }.control-grid input[type="range"] { width: 100%; }.check-label { display: flex !important; align-items: center; gap: 7px !important; min-height: 31px; color: #55555e !important; }.check-label input { accent-color: #d13c86; }.range-value { color: #55555e; }.paint-controls { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+.preview-pane { position: sticky; top: 0; align-self: start; min-height: 0; display: flex; flex-direction: column; }.preview-title, .source-header { height: 28px; display: flex; align-items: center; justify-content: space-between; color: #686871; font-size: 12px; font-weight: 650; }.theme-preview { position: relative; height: 176px; display: flex; align-items: center; overflow: hidden; background: #15151a; border: 1px solid #2e2e35; }.theme-preview::before { content: ''; position: absolute; inset: 0; background: linear-gradient(135deg, #23232b, #0d0d11 60%, #2b1823); }.theme-preview .amdl-lyrics { position: relative; width: 100%; padding: 20px; box-sizing: border-box; }.preview-progress { position: absolute; right: 0; bottom: 0; left: 0; height: 3px; background: #ffffff20; }.preview-progress > div { height: 100%; }.source-header { margin-top: 10px; }.text-command { border: 0; background: transparent; color: #bd2c76; cursor: pointer; }.css-editor { min-height: 110px; flex: 1; resize: none; border: 1px solid #cfcfd5; border-radius: 5px; padding: 10px; background: #fff; color: #33333a; font: 11px/1.5 Consolas, monospace; user-select: text; }
 .number-input { width: 58px; padding: 7px 8px; border: 1px solid #cfcfd5; border-radius: 5px; text-align: center; }.about-panel { flex: 1; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 10px; color: #55555e; }.about-logo { color: #d9428b; font-size: 35px; font-weight: 800; }.settings-footer { padding-top: 14px; display: flex; justify-content: space-between; align-items: center; }.save-message { color: #bf357c; font-size: 12px; }.footer-actions { display: flex; gap: 9px; }.button { min-width: 70px; height: 32px; border-radius: 5px; padding: 0 14px; font-size: 13px; cursor: pointer; }.button.secondary { border: 1px solid #d0d0d5; background: white; color: #5d5d65; }.button.primary { border: 0; background: #d13c86; color: white; }
 </style>
