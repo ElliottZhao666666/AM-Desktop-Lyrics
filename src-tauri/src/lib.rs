@@ -1,3 +1,4 @@
+pub mod domain;
 pub mod lyrics;
 pub mod media;
 
@@ -29,6 +30,54 @@ pub fn run() {
                         tauri::PhysicalPosition::new(x, y),
                     ));
                 }
+
+                let bounded_window = window.clone();
+                window.on_window_event(move |event| {
+                    if !matches!(event, tauri::WindowEvent::Moved(_)) {
+                        return;
+                    }
+                    let Ok(monitors) = bounded_window.available_monitors() else {
+                        return;
+                    };
+                    if monitors.is_empty() {
+                        return;
+                    }
+                    let Ok(position) = bounded_window.outer_position() else {
+                        return;
+                    };
+                    let Ok(size) = bounded_window.outer_size() else {
+                        return;
+                    };
+                    let left = monitors
+                        .iter()
+                        .map(|monitor| monitor.position().x)
+                        .min()
+                        .unwrap();
+                    let top = monitors
+                        .iter()
+                        .map(|monitor| monitor.position().y)
+                        .min()
+                        .unwrap();
+                    let right = monitors
+                        .iter()
+                        .map(|monitor| monitor.position().x + monitor.size().width as i32)
+                        .max()
+                        .unwrap();
+                    let bottom = monitors
+                        .iter()
+                        .map(|monitor| monitor.position().y + monitor.size().height as i32)
+                        .max()
+                        .unwrap();
+                    let max_x = (right - size.width as i32).max(left);
+                    let max_y = (bottom - size.height as i32).max(top);
+                    let x = position.x.clamp(left, max_x);
+                    let y = position.y.clamp(top, max_y);
+                    if x != position.x || y != position.y {
+                        let _ = bounded_window.set_position(tauri::Position::Physical(
+                            tauri::PhysicalPosition::new(x, y),
+                        ));
+                    }
+                });
             }
             Ok(())
         })

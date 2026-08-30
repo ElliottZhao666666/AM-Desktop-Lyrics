@@ -4,7 +4,6 @@
 // 将媒体信息（标题、艺术家、播放状态、进度）推送给前端。
 // =============================================================================
 
-use serde::Serialize;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 use tauri::{command, Emitter};
@@ -17,6 +16,9 @@ use windows::Media::Control::{
     GlobalSystemMediaTransportControlsSessionPlaybackStatus,
 };
 // TypedEventHandler 用于注册 WinRT 事件回调
+use crate::domain::{
+    MediaPositionPayload, MediaSnapshotPayload, MediaStatePayload, PlaybackState, TrackIdentity,
+};
 use windows::Foundation::TypedEventHandler;
 use windows::Win32::System::WinRT::{RoInitialize, RoUninitialize, RO_INIT_MULTITHREADED};
 
@@ -47,40 +49,6 @@ static CURRENT_MEDIA_POSITION: Mutex<MediaPositionPayload> = Mutex::new(MediaPos
     position_ms: 0,
     duration_ms: 0,
 });
-
-// =============================================================================
-// 数据结构定义（均可序列化，用于 Tauri 事件传递）
-// =============================================================================
-
-/// 播放状态枚举，映射自 Windows SMTC PlaybackStatus
-#[derive(Debug, Clone, Serialize)]
-pub enum PlaybackState {
-    Playing,
-    Paused,
-    Stopped,
-    Unknown,
-}
-
-/// 媒体状态载荷 —— 通过 "media-state-changed" 事件发送给前端
-#[derive(Debug, Clone, Serialize)]
-pub struct MediaStatePayload {
-    pub title: String,
-    pub artist: String,
-    pub playback_state: PlaybackState,
-}
-
-/// 媒体进度载荷 —— 通过 "media-position-changed" 事件发送给前端
-#[derive(Debug, Clone, Serialize)]
-pub struct MediaPositionPayload {
-    pub position_ms: u64,
-    pub duration_ms: u64,
-}
-
-#[derive(Debug, Clone, Serialize)]
-pub struct MediaSnapshotPayload {
-    pub media: MediaStatePayload,
-    pub position: MediaPositionPayload,
-}
 
 // =============================================================================
 // 辅助函数
@@ -125,8 +93,11 @@ fn find_apple_music_session(
 
 fn waiting_state() -> MediaStatePayload {
     MediaStatePayload {
-        title: "等待 Apple Music 播放...".to_string(),
-        artist: String::new(),
+        track: TrackIdentity {
+            title: "等待 Apple Music 播放...".to_string(),
+            artist: String::new(),
+            album: None,
+        },
         playback_state: PlaybackState::Stopped,
     }
 }
@@ -159,6 +130,80 @@ fn clear_current_session() {
     }
 }
 
+fn non_empty(value: String) -> Option<String> {
+    let value = value.trim();
+    (!value.is_empty()).then(|| value.to_string())
+}
+
+fn metadata_segments(value: &str) -> Vec<&str> {
+    value
+        .split(|ch| matches!(ch, '—' | '–' | '－' | '一'))
+        .map(str::trim)
+        .filter(|part| !part.is_empty())
+        .collect()
+}
+
+fn parse_apple_music_metadata(
+    raw_title: String,
+    raw_artist: String,
+    raw_album: Option<String>,
+) -> TrackIdentity {
+    let title_segments = metadata_segments(&raw_title);
+    if title_segments.len() >= 3 {
+        return TrackIdentity {
+            title: title_segments[0].to_string(),
+            artist: title_segments[1].to_string(),
+            album: Some(title_segments[2..].join(" — ")),
+        };
+    }
+
+    let artist_segments = metadata_segments(&raw_artist);
+    if artist_segments.len() >= 2 {
+        let parsed_album = artist_segments[1..].join(" — ");
+        let album = raw_album.or_else(|| Some(parsed_album));
+        return TrackIdentity {
+            title: raw_title.trim().to_string(),
+            artist: artist_segments[0].to_string(),
+            album,
+        };
+    }
+
+    let artist = clean_artist(raw_artist, raw_album.as_deref());
+    TrackIdentity {
+        title: raw_title.trim().to_string(),
+        artist,
+        album: raw_album,
+    }
+}
+
+fn clean_artist(artist: String, album: Option<&str>) -> String {
+    let artist = artist.trim();
+    let Some(album) = album.map(str::trim).filter(|value| !value.is_empty()) else {
+        return artist.to_string();
+    };
+
+    artist
+        .char_indices()
+        .rev()
+        .filter(|(_, ch)| matches!(ch, '-' | '—' | '–' | '－' | '一'))
+        .find_map(|(index, ch)| {
+            let suffix = artist[index + ch.len_utf8()..].trim();
+            (normalize_metadata(suffix) == normalize_metadata(album)).then(|| &artist[..index])
+        })
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .unwrap_or(artist)
+        .to_string()
+}
+
+fn normalize_metadata(value: &str) -> String {
+    value
+        .chars()
+        .filter(|ch| !ch.is_whitespace())
+        .flat_map(char::to_lowercase)
+        .collect()
+}
+
 /// 从会话中读取媒体属性和播放状态，打包为 MediaStatePayload。
 /// 使用 TryGetMediaPropertiesAsync().get() 同步阻塞获取异步结果。
 fn read_media_state(
@@ -167,8 +212,15 @@ fn read_media_state(
     // TryGetMediaPropertiesAsync() 异步获取媒体元数据（标题、艺术家等），
     // .get() 阻塞等待异步操作完成（在事件回调和同步上下文中使用）
     let props = session.TryGetMediaPropertiesAsync()?.get()?;
-    let title = props.Title()?.to_string();
-    let artist = props.Artist()?.to_string();
+    let raw_title = props.Title()?.to_string();
+    let raw_album = non_empty(props.AlbumTitle()?.to_string());
+    let raw_artist = props.Artist()?.to_string();
+    let track =
+        parse_apple_music_metadata(raw_title.clone(), raw_artist.clone(), raw_album.clone());
+    println!(
+        "[SMTC] 原始元数据: title={:?}, artist={:?}, album={:?}; 分离后 title={:?}, artist={:?}, album={:?}",
+        raw_title, raw_artist, raw_album, track.title, track.artist, track.album
+    );
 
     // GetPlaybackInfo() 同步获取播放信息，PlaybackStatus() 返回播放状态枚举
     let info = session.GetPlaybackInfo()?;
@@ -176,8 +228,7 @@ fn read_media_state(
     let playback_state = convert_status(status);
 
     Ok(MediaStatePayload {
-        title,
-        artist,
+        track,
         playback_state,
     })
 }
@@ -226,7 +277,7 @@ impl SmtcManager {
 /// SMTC 状态机主循环（异步），负责：
 /// 1. Searching (寻找状态): 轮询查找目标会话，发送“等待”状态
 /// 2. Connected (连接状态): 注册事件
-/// 3. Syncing (同步状态): 250ms 轮询进度
+/// 3. Syncing (同步状态): 每秒读取权威进度，前端在两次校准间插值
 /// 4. Disconnected (断开状态): 会话失效时注销事件并退回 Searching
 fn smtc_main_loop(app_handle: Arc<tauri::AppHandle>) {
     let mut current_session: Option<GlobalSystemMediaTransportControlsSession> = None;
@@ -283,16 +334,15 @@ fn smtc_main_loop(app_handle: Arc<tauri::AppHandle>) {
                                         Ok(payload) => {
                                             println!(
                                                 "[SMTC] 媒体属性变化: {} - {} ({:?})",
-                                                payload.title,
-                                                payload.artist,
+                                                payload.track.title,
+                                                payload.track.artist,
                                                 payload.playback_state
                                             );
                                             emit_media_state(&handle_for_props, &payload);
 
                                             // 触发歌词搜索联动
                                             crate::lyrics::provider::fetch_and_emit_lyrics(
-                                                payload.title.clone(),
-                                                payload.artist.clone(),
+                                                payload.track.clone(),
                                                 (*handle_for_props).clone(),
                                             );
                                         }
@@ -349,8 +399,7 @@ fn smtc_main_loop(app_handle: Arc<tauri::AppHandle>) {
                         if let Ok(payload) = read_media_state(&session) {
                             emit_media_state(&app_handle, &payload);
                             crate::lyrics::provider::fetch_and_emit_lyrics(
-                                payload.title.clone(),
-                                payload.artist.clone(),
+                                payload.track.clone(),
                                 (*app_handle).clone(),
                             );
                         }
@@ -456,8 +505,8 @@ fn smtc_main_loop(app_handle: Arc<tauri::AppHandle>) {
                     store_media_position(&empty_position);
                     let _ = app_handle.emit("media-position-changed", &empty_position);
                 } else {
-                    // 正常同步中，休眠 250ms 后继续轮询
-                    std::thread::sleep(Duration::from_millis(250));
+                    // 前端使用单调时钟插值，这里只需每秒提供一次权威校准。
+                    std::thread::sleep(Duration::from_secs(1));
                 }
             }
         }
@@ -559,4 +608,72 @@ pub fn prev_track() -> Result<(), String> {
     }
     println!("[SMTC] 执行: 上一曲");
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{clean_artist, parse_apple_music_metadata};
+
+    #[test]
+    fn separates_artist_and_album_when_album_property_is_missing() {
+        assert_eq!(
+            parse_apple_music_metadata("爱在西元前".into(), "周杰伦 — 范特西".into(), None,),
+            crate::domain::TrackIdentity {
+                title: "爱在西元前".into(),
+                artist: "周杰伦".into(),
+                album: Some("范特西".into()),
+            }
+        );
+    }
+
+    #[test]
+    fn separates_fixed_three_part_title() {
+        assert_eq!(
+            parse_apple_music_metadata(
+                "爱在西元前 — 周杰伦 — 范特西".into(),
+                "周杰伦 — 范特西".into(),
+                None,
+            ),
+            crate::domain::TrackIdentity {
+                title: "爱在西元前".into(),
+                artist: "周杰伦".into(),
+                album: Some("范特西".into()),
+            }
+        );
+    }
+
+    #[test]
+    fn removes_matching_album_suffix_from_artist() {
+        assert_eq!(
+            clean_artist(
+                "Taylor Swift — The Life of a Showgirl".into(),
+                Some("The Life of a Showgirl")
+            ),
+            "Taylor Swift"
+        );
+    }
+
+    #[test]
+    fn preserves_artist_when_suffix_is_not_album() {
+        assert_eq!(
+            clean_artist("Simon & Garfunkel - Live".into(), Some("Greatest Hits")),
+            "Simon & Garfunkel - Live"
+        );
+    }
+
+    #[test]
+    fn removes_album_suffix_with_cjk_separator_and_spacing_difference() {
+        assert_eq!(
+            clean_artist("蔡健雅 一 Goodbye &Hello".into(), Some("Goodbye & Hello")),
+            "蔡健雅"
+        );
+    }
+
+    #[test]
+    fn removes_album_suffix_with_en_dash() {
+        assert_eq!(
+            clean_artist("Artist – Album".into(), Some("Album")),
+            "Artist"
+        );
+    }
 }

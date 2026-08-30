@@ -1,86 +1,68 @@
 <template>
-  <div class="w-full h-full flex flex-col justify-center items-center bg-transparent text-white select-none px-6 pointer-events-none" data-tauri-drag-region>
-    <!-- 歌曲信息行 -->
-    <div class="text-base font-semibold mb-1 tracking-wide drop-shadow-md text-white/80 transition-opacity duration-500"
-         :class="title && isPlaying ? 'opacity-100' : 'opacity-60'"
-    >
-      <template v-if="title && artist">
-        {{ title }} — {{ artist }}
-      </template>
-      <template v-else>
-        等待 Apple Music 播放...
-      </template>
-    </div>
-
+  <div class="w-full h-full flex flex-col justify-center items-center bg-transparent text-white select-none px-6 pointer-events-none">
     <!-- 歌词展示 -->
     <div class="text-3xl font-black bg-clip-text text-transparent bg-gradient-to-r from-pink-400 via-fuchsia-400 to-purple-500 drop-shadow-lg transition-all duration-300"
          :class="isPlaying ? 'opacity-100 scale-100' : 'opacity-50 scale-95'"
     >
-      <template v-if="lyrics.length === 0">
-        ♪ {{ isPlaying ? '正在加载歌词...' : '已暂停' }} ♪
+      <template v-if="displayMode !== 'line'">
+        {{ displayText }}
       </template>
-      <template v-else>
-        {{ currentLyricText }}
+      <template v-else-if="currentLine">
+        {{ currentLine.text }}
       </template>
     </div>
 
-    <!-- 进度条 -->
-    <div v-if="durationMs > 0" class="w-full max-w-md mt-3">
-      <div class="w-full h-1 bg-white/20 rounded-full overflow-hidden">
-        <div 
-          class="h-full bg-gradient-to-r from-pink-400 to-purple-500 rounded-full transition-all duration-500 ease-linear"
-          :style="{ width: progressPercent + '%' }"
-        ></div>
-      </div>
-      <div class="flex justify-between text-xs text-white/50 mt-1">
-        <span>{{ formatTime(positionMs) }}</span>
-        <span>{{ formatTime(durationMs) }}</span>
-      </div>
-    </div>
   </div>
 </template>
 
 <script setup lang="ts">
 import { computed } from 'vue';
 
-import type { LyricLinePayload } from '../App.vue';
+import type { LyricsDocument, LyricsLoadState } from '../types';
 
 const props = defineProps<{
   title: string;
   artist: string;
   isPlaying: boolean;
   positionMs: number;
-  durationMs: number;
-  lyrics: LyricLinePayload[];
+  lyrics: LyricsDocument | null;
+  lyricsState: LyricsLoadState;
+  lyricsMessage: string | null;
 }>();
 
-/** 计算播放进度百分比 */
-const progressPercent = computed(() => {
-  if (props.durationMs <= 0) return 0;
-  return Math.min((props.positionMs / props.durationMs) * 100, 100);
-});
-
 /** 计算当前应该高亮显示的歌词 */
-const currentLyricText = computed(() => {
-  if (!props.lyrics || props.lyrics.length === 0) return '';
-  
-  // 找到最后一句 time <= positionMs 的歌词
-  let current = props.lyrics[0];
-  for (const line of props.lyrics) {
-    if (line.time <= props.positionMs) {
-      current = line;
-    } else {
-      break; // 因为时间是有序的，找到第一个大于当前时间的就可以提前结束
-    }
+const INTERLUDE_GAP_MS = 8_000;
+
+const activeLineIndex = computed(() => {
+  if (!props.lyrics?.lines.length || props.positionMs < props.lyrics.lines[0].begin_ms) return -1;
+  let index = 0;
+  for (let i = 1; i < props.lyrics.lines.length; i += 1) {
+    if (props.lyrics.lines[i].begin_ms > props.positionMs) break;
+    index = i;
   }
-  return current.text;
+  return index;
 });
 
-/** 将毫秒格式化为 mm:ss */
-function formatTime(ms: number): string {
-  const totalSeconds = Math.floor(ms / 1000);
-  const minutes = Math.floor(totalSeconds / 60);
-  const seconds = totalSeconds % 60;
-  return `${minutes}:${seconds.toString().padStart(2, '0')}`;
-}
+const currentLine = computed(() => activeLineIndex.value >= 0 ? props.lyrics?.lines[activeLineIndex.value] ?? null : null);
+
+const displayMode = computed<'status' | 'intro' | 'interlude' | 'line'>(() => {
+  if (props.lyricsState !== 'loaded' || !props.lyrics?.lines.length) return 'status';
+  if (activeLineIndex.value < 0) return 'intro';
+  const line = props.lyrics.lines[activeLineIndex.value];
+  const next = props.lyrics.lines[activeLineIndex.value + 1];
+  if (!next) return 'line';
+  const lineEnd = line.end_ms ?? line.begin_ms;
+  if (next.begin_ms - lineEnd >= INTERLUDE_GAP_MS && props.positionMs >= lineEnd) return 'interlude';
+  return 'line';
+});
+
+const displayText = computed(() => {
+  if (displayMode.value === 'intro') return [props.title, props.artist].filter(Boolean).join(' - ');
+  if (displayMode.value === 'interlude') return '● ● ●';
+  if (props.lyricsState === 'loading') return '正在搜索歌词...';
+  if (props.lyricsState === 'notFound') return '暂无匹配歌词';
+  if (props.lyricsState === 'error') return props.lyricsMessage || '歌词加载失败';
+  return '';
+});
+
 </script>

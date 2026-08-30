@@ -10,10 +10,14 @@
       :title="mediaTitle" 
       :artist="mediaArtist"
       :is-playing="isPlaying"
+      :position-ms="positionMs"
+      :duration-ms="durationMs"
+      :locked="controlsLocked"
       @prev="onPrev"
       @playPause="onPlayPause"
       @next="onNext"
       @settings="onSettings"
+      @toggleLock="controlsLocked = !controlsLocked"
       @close="onClose"
     />
     <LyricsBoard 
@@ -21,8 +25,9 @@
       :artist="mediaArtist"
       :is-playing="isPlaying"
       :position-ms="positionMs"
-      :duration-ms="durationMs"
       :lyrics="currentLyrics"
+      :lyrics-state="lyricsState"
+      :lyrics-message="lyricsMessage"
     />
   </div>
 </template>
@@ -34,6 +39,14 @@ import { listen, type UnlistenFn } from '@tauri-apps/api/event';
 import { getCurrentWindow } from '@tauri-apps/api/window';
 import ControlBar from './components/ControlBar.vue';
 import LyricsBoard from './components/LyricsBoard.vue';
+import type {
+  LyricsDocument,
+  LyricsLoadState,
+  LyricsStatusPayload,
+  MediaPositionPayload,
+  MediaSnapshotPayload,
+  MediaStatePayload,
+} from './types';
 
 // ==========================================
 // 响应式状态
@@ -44,48 +57,71 @@ const mediaArtist = ref('');
 const isPlaying = ref(false);
 const positionMs = ref(0);
 const durationMs = ref(0);
-const currentLyrics = ref<LyricLinePayload[]>([]);
+const currentLyrics = ref<LyricsDocument | null>(null);
+const lyricsState = ref<LyricsLoadState>('loading');
+const lyricsMessage = ref<string | null>(null);
+const controlsLocked = ref(false);
 
 // 事件注销句柄
 let unlistenMediaState: UnlistenFn | null = null;
 let unlistenMediaPosition: UnlistenFn | null = null;
 let unlistenLyricsLoaded: UnlistenFn | null = null;
+let unlistenLyricsStatus: UnlistenFn | null = null;
+let animationFrameId: number | null = null;
+let clockAnchorPositionMs = 0;
+let clockAnchorTime = performance.now();
+
+const CLOCK_SNAP_THRESHOLD_MS = 300;
+
+function interpolatedPosition(now = performance.now()) {
+  const elapsed = isPlaying.value ? Math.max(0, now - clockAnchorTime) : 0;
+  const estimated = clockAnchorPositionMs + elapsed;
+  return durationMs.value > 0 ? Math.min(estimated, durationMs.value) : estimated;
+}
+
+function applyAuthoritativePosition(payload: MediaPositionPayload) {
+  const now = performance.now();
+  const predicted = interpolatedPosition(now);
+  const drift = payload.position_ms - predicted;
+  const corrected = isPlaying.value && Math.abs(drift) <= CLOCK_SNAP_THRESHOLD_MS
+    ? predicted + drift * 0.35
+    : payload.position_ms;
+
+  durationMs.value = payload.duration_ms;
+  clockAnchorPositionMs = Math.max(0, corrected);
+  clockAnchorTime = now;
+  positionMs.value = clockAnchorPositionMs;
+}
+
+function updateInterpolatedPosition(now: number) {
+  if (isPlaying.value) positionMs.value = interpolatedPosition(now);
+  animationFrameId = requestAnimationFrame(updateInterpolatedPosition);
+}
 
 // ==========================================
 // 媒体状态事件载荷类型定义
 // ==========================================
-interface MediaStatePayload {
-  title: string;
-  artist: string;
-  playback_state: 'Playing' | 'Paused' | 'Stopped' | 'Unknown';
-}
-
-interface MediaPositionPayload {
-  position_ms: number;
-  duration_ms: number;
-}
-
-interface MediaSnapshotPayload {
-  media: MediaStatePayload;
-  position: MediaPositionPayload;
-}
-
-export interface LyricLinePayload {
-  time: number;
-  text: string;
-}
-
 function applyMediaState(payload: MediaStatePayload) {
-  const trackChanged = payload.title !== mediaTitle.value || payload.artist !== mediaArtist.value;
+  const trackChanged = payload.track.title !== mediaTitle.value || payload.track.artist !== mediaArtist.value;
+  const nextIsPlaying = payload.playback_state === 'Playing';
+  const now = performance.now();
   if (trackChanged) {
-    currentLyrics.value = [];
+    currentLyrics.value = null;
+    lyricsState.value = 'loading';
+    lyricsMessage.value = null;
     positionMs.value = 0;
     durationMs.value = 0;
+    clockAnchorPositionMs = 0;
+    clockAnchorTime = now;
+  } else if (nextIsPlaying !== isPlaying.value) {
+    clockAnchorPositionMs = interpolatedPosition(now);
+    clockAnchorTime = now;
+    positionMs.value = clockAnchorPositionMs;
   }
 
-  mediaTitle.value = payload.title;
-  mediaArtist.value = payload.artist;
-  isPlaying.value = payload.playback_state === 'Playing';
+  mediaTitle.value = payload.track.title;
+  mediaArtist.value = payload.track.artist;
+  isPlaying.value = nextIsPlaying;
 }
 
 // ==========================================
@@ -100,33 +136,44 @@ onMounted(async () => {
 
   // 监听 Rust 端广播的播放进度变更事件
   unlistenMediaPosition = await listen<MediaPositionPayload>('media-position-changed', (event) => {
-    const payload = event.payload;
-    positionMs.value = payload.position_ms;
-    durationMs.value = payload.duration_ms;
+    applyAuthoritativePosition(event.payload);
   });
 
-  // 监听假歌词加载完成事件
-  unlistenLyricsLoaded = await listen<LyricLinePayload[]>('lyrics-loaded', (event) => {
+  // 监听歌词加载完成事件
+  unlistenLyricsLoaded = await listen<LyricsDocument>('lyrics-loaded', (event) => {
     console.log('[IPC] lyrics-loaded:', event.payload);
-    currentLyrics.value = event.payload;
+    if (sameTrack(event.payload.track.title, event.payload.track.artist)) currentLyrics.value = event.payload;
+  });
+
+  unlistenLyricsStatus = await listen<LyricsStatusPayload>('lyrics-status-changed', (event) => {
+    if (!sameTrack(event.payload.track.title, event.payload.track.artist)) return;
+    lyricsState.value = event.payload.state;
+    lyricsMessage.value = event.payload.message;
   });
 
   // 监听全部就绪后主动读取一次快照，补回 WebView 挂载前可能错过的事件。
   try {
     const snapshot = await invoke<MediaSnapshotPayload>('get_media_snapshot');
     applyMediaState(snapshot.media);
-    positionMs.value = snapshot.position.position_ms;
-    durationMs.value = snapshot.position.duration_ms;
+    applyAuthoritativePosition(snapshot.position);
   } catch (error) {
     console.error('get_media_snapshot failed:', error);
   }
+
+  animationFrameId = requestAnimationFrame(updateInterpolatedPosition);
 });
 
 onUnmounted(() => {
   unlistenMediaState?.();
   unlistenMediaPosition?.();
   unlistenLyricsLoaded?.();
+  unlistenLyricsStatus?.();
+  if (animationFrameId !== null) cancelAnimationFrame(animationFrameId);
 });
+
+function sameTrack(title: string, artist: string) {
+  return title === mediaTitle.value && artist === mediaArtist.value;
+}
 
 // ==========================================
 // 控制按钮事件处理
@@ -158,8 +205,8 @@ const onNext = async () => {
   }
 };
 
-const onSettings = () => {
-  console.log('[UI] Open settings');
+const onSettings = async () => {
+  console.log('[UI] Settings requested');
 };
 
 const onClose = async () => {
