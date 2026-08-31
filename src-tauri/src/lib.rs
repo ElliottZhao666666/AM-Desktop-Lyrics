@@ -582,12 +582,14 @@ pub fn run() {
             });
             let show_main_interface_item =
                 MenuItem::with_id(app, "show-main-interface", "显示主界面", true, None::<&str>)?;
+            let settings_item = MenuItem::with_id(app, "settings", "设置", true, None::<&str>)?;
             let quit_item = MenuItem::with_id(app, "quit", "退出 AMDL", true, None::<&str>)?;
             let menu = Menu::with_items(
                 app,
                 &[
                     &lock_item,
                     &show_main_interface_item,
+                    &settings_item,
                     &PredefinedMenuItem::separator(app)?,
                     &quit_item,
                 ],
@@ -626,8 +628,12 @@ pub fn run() {
                 }
                 "show-main-interface" => {
                     println!("[AMDL][托盘] 显示主界面");
+                    show_main_window(&menu_app);
+                }
+                "settings" => {
+                    println!("[AMDL][托盘] 打开设置");
                     if let Err(error) = open_settings(menu_app.clone()) {
-                        eprintln!("[AMDL][托盘] 显示主界面失败: {error}");
+                        eprintln!("[AMDL][托盘] 打开设置失败: {error}");
                     }
                 }
                 "quit" => {
@@ -757,6 +763,7 @@ pub fn run() {
             lyrics::provider::preview_qq_lyrics,
             lyrics::provider::rescan_local_lyrics,
             lyrics::provider::refetch_qq_lyrics,
+            lyrics::provider::apply_manual_lyrics,
             lyrics::provider::apply_custom_lyrics,
         ])
         .run(tauri::generate_context!())

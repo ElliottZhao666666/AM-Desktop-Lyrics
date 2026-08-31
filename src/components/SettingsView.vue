@@ -1,7 +1,7 @@
 <template>
-  <main class="settings-shell">
+  <main class="settings-shell" @contextmenu="handleContextMenu">
     <aside class="settings-sidebar">
-      <div class="brand-mark">AMDL</div>
+      <div class="brand-mark"><img :src="appIcon" alt="AMDL" /><span>AMDL</span></div>
       <nav aria-label="设置分类">
         <button v-for="item in sections" :key="item.id" class="nav-item" :class="{ active: activeSection === item.id }" @click="activeSection = item.id">
           <component :is="item.icon" :size="17" /><span>{{ item.label }}</span>
@@ -13,7 +13,7 @@
       <header class="settings-header"><div><p class="eyebrow">AMDL</p><h1>{{ currentSection.label }}</h1></div></header>
 
       <div v-if="activeSection === 'general'" class="settings-list">
-        <div class="setting-row"><div><strong>歌词时间偏移 (ms)</strong><p>调整后即时生效；点击“应用”后写入配置，并在下次运行时读取。</p></div><input v-model.number="settings.lyricsTimeOffsetMs" class="offset-input" type="number" step="10" @input="applyRuntimeLyricsOffset" /></div>
+        <div class="setting-row"><div><strong>歌词时间偏移 (ms)</strong><p>调整后即时生效；点击“应用”后写入配置，并在下次运行时读取。</p></div><input :value="lyricsOffsetInput" class="offset-input" type="text" inputmode="numeric" @input="updateLyricsOffsetInput" /></div>
         <div class="setting-row"><div><strong>自动转换繁体歌词到简体</strong><p>Apple Music 缓存命中时自动转换华语歌词。</p></div><button class="switch" :class="{ on: settings.autoConvertTraditionalToSimplified }" role="switch" :aria-checked="settings.autoConvertTraditionalToSimplified" @click="settings.autoConvertTraditionalToSimplified = !settings.autoConvertTraditionalToSimplified"><span /></button></div>
         <div class="setting-row"><div><strong>记忆歌词窗口位置和大小</strong><p>保存拖动和缩放后的歌词窗口状态。</p></div><button class="switch" :class="{ on: settings.rememberLyricsWindowBounds }" role="switch" :aria-checked="settings.rememberLyricsWindowBounds" @click="settings.rememberLyricsWindowBounds = !settings.rememberLyricsWindowBounds"><span /></button></div>
         <div class="setting-row"><div><strong>歌词缓存歌曲数</strong><p>保存最近播放的歌词，重复播放时优先读取。</p></div><input v-model.number="settings.localCacheLimit" class="number-input" type="number" min="1" max="50" step="1" /></div>
@@ -119,12 +119,12 @@
           <section class="lyrics-preview-pane">
             <div class="pane-heading"><span>歌词全文预览</span><small>{{ selectedCandidate?.track.title || '未选择' }}</small></div>
             <textarea :value="previewText" class="lyrics-preview" readonly spellcheck="false" aria-label="选中歌曲歌词全文" />
-            <button class="button primary apply-lyrics-button" :disabled="!selectedCandidate || !previewText || matchBusy || !canMatch" @click="applySelectedLyrics"><Check :size="16" />应用此歌词</button>
+            <div class="apply-lyrics-actions"><button class="button secondary apply-lyrics-button" :disabled="!selectedCandidate || !previewText || matchBusy || !canMatch" @click="applySelectedLyrics"><Check :size="16" />应用此歌词</button><button class="button primary apply-lyrics-button" :disabled="!selectedCandidate || !previewText || matchBusy || !canMatch" @click="applyAndAlwaysUseSelectedLyrics"><Check :size="16" />应用并始终使用此歌词</button></div>
           </section>
         </div>
       </div>
 
-      <div v-else class="about-panel"><div class="about-logo">AMDL</div><strong>Apple Music Desktop Lyrics</strong><span>桌面歌词工具</span><small>版本 1.0.0</small><small>作者：月半菌</small><small>amdl.ybjun.com</small></div>
+      <div v-else class="about-panel"><img class="about-logo" :src="appIcon" alt="AMDL 软件图标" /><strong>Apple Music Desktop Lyrics</strong><span>桌面歌词工具</span><small>版本 1.0.0</small><small>作者：月半菌</small><small>amdl.ybjun.com</small></div>
 
       <footer class="settings-footer"><span class="save-message">{{ message }}</span><div v-if="activeSection === 'general' || activeSection === 'appearance'" class="footer-actions"><button class="button secondary" @click="closeWindow">取消</button><button class="button primary" @click="saveSettings">应用</button></div></footer>
     </section>
@@ -141,8 +141,9 @@ import { Check, CloudDownload, Database, FileText, FolderOpen, Info, Palette, Re
 import type { AppSettings, MediaSnapshotPayload, MediaStatePayload, QqLyricsPreview, QqSongCandidate, RuntimeLyricsTimeOffset, ThemeFile, TrackIdentity } from '../types';
 import { buildThemeCss, cloneEditor, DEFAULT_EDITOR, PRESETS, type ThemeEditor } from '../theme';
 import TextStyleEditor from './TextStyleEditor.vue';
+import appIcon from '../../app-icon.png';
 
-const sections = [{ id: 'general', label: '常用', icon: Settings2 }, { id: 'appearance', label: '外观', icon: Palette }, { id: 'lyricsMatch', label: '匹配歌词', icon: Search }, { id: 'logs', label: '日志', icon: FileText }, { id: 'about', label: '关于', icon: Info }] as const;
+const sections = [{ id: 'general', label: '通用', icon: Settings2 }, { id: 'appearance', label: '外观', icon: Palette }, { id: 'lyricsMatch', label: '匹配歌词', icon: Search }, { id: 'logs', label: '日志', icon: FileText }, { id: 'about', label: '关于', icon: Info }] as const;
 const activeSection = ref<typeof sections[number]['id']>('general');
 const settings = ref<AppSettings>({
   autoConvertTraditionalToSimplified: true,
@@ -172,6 +173,7 @@ let unlistenMediaState: UnlistenFn | null = null;
 let lyricsTimeOffsetRevision = -1;
 let latestLyricsTimeOffset: RuntimeLyricsTimeOffset = { offsetMs: 0, revision: -1 };
 let pendingLyricsOffsetUpdate: Promise<void> = Promise.resolve();
+const lyricsOffsetInput = ref('0');
 
 watch(activeSection, (section) => {
   if (section === 'logs') void refreshLog();
@@ -182,6 +184,7 @@ function applyLyricsTimeOffset(payload: RuntimeLyricsTimeOffset) {
   lyricsTimeOffsetRevision = payload.revision;
   latestLyricsTimeOffset = payload;
   settings.value.lyricsTimeOffsetMs = payload.offsetMs;
+  lyricsOffsetInput.value = String(payload.offsetMs);
 }
 
 onMounted(async () => {
@@ -272,9 +275,17 @@ async function applySelectedLyrics() {
   if (!selectedCandidate.value) return;
   matchBusy.value = true;
   try {
-    await invoke('apply_custom_lyrics', { track: currentTrack.value, candidate: selectedCandidate.value });
-    await showMessage('歌词已应用并保存为永久匹配', { title: 'AMDL', kind: 'info' });
+    await invoke('apply_manual_lyrics', { track: currentTrack.value, candidate: selectedCandidate.value });
+    await showMessage('歌词已应用并覆盖普通缓存', { title: 'AMDL', kind: 'info' });
   } catch (error) { await showMessage(String(error), { title: '应用失败', kind: 'error' }); }
+  finally { matchBusy.value = false; }
+}
+
+async function applyAndAlwaysUseSelectedLyrics() {
+  if (!selectedCandidate.value) return;
+  matchBusy.value = true;
+  try { await invoke('apply_custom_lyrics', { track: currentTrack.value, candidate: selectedCandidate.value }); await showMessage('歌词已应用并保存为永久匹配', { title: 'AMDL', kind: 'info' }); }
+  catch (error) { await showMessage(String(error), { title: '应用失败', kind: 'error' }); }
   finally { matchBusy.value = false; }
 }
 
@@ -297,6 +308,21 @@ function applyRuntimeLyricsOffset() {
       message.value = String(error);
     }
   });
+}
+
+function updateLyricsOffsetInput(event: Event) {
+  const value = (event.target as HTMLInputElement).value;
+  lyricsOffsetInput.value = value;
+  if (value === '' || value === '-') return;
+  if (!Number.isFinite(Number(value))) return;
+  settings.value.lyricsTimeOffsetMs = Math.trunc(Number(value));
+  applyRuntimeLyricsOffset();
+}
+
+function handleContextMenu(event: MouseEvent) {
+  const target = event.target as HTMLElement | null;
+  if (target?.closest('input, textarea, [contenteditable="true"]')) return;
+  event.preventDefault();
 }
 
 async function importTheme() {
@@ -340,12 +366,12 @@ function closeWindow() { getCurrentWindow().hide(); }
 
 <style scoped>
 .settings-shell { width: 100vw; height: 100vh; display: flex; overflow: hidden; color: #24242a; background: #f4f4f6; font-family: "Segoe UI", "Microsoft YaHei", sans-serif; }
-.settings-sidebar { width: 176px; flex: 0 0 176px; padding: 28px 14px; box-sizing: border-box; background: #e9e9ed; border-right: 1px solid #d8d8dd; }.brand-mark { margin: 0 14px 30px; font-size: 18px; font-weight: 750; color: #d9428b; }.nav-item { width: 100%; height: 42px; display: flex; align-items: center; gap: 11px; border: 0; border-radius: 7px; padding: 0 13px; color: #55555e; background: transparent; font-size: 14px; cursor: pointer; }.nav-item:hover { background: #dedee4; }.nav-item.active { color: #bd2c76; background: #fff; box-shadow: 0 1px 3px #00000012; font-weight: 650; }
+.settings-sidebar { width: 176px; flex: 0 0 176px; padding: 28px 14px; box-sizing: border-box; background: #e9e9ed; border-right: 1px solid #d8d8dd; }.brand-mark { display: flex; align-items: center; gap: 9px; margin: 0 14px 30px; font-size: 18px; font-weight: 750; color: #d9428b; }.brand-mark img { width: 28px; height: 28px; border-radius: 7px; }.nav-item { width: 100%; height: 42px; display: flex; align-items: center; gap: 11px; border: 0; border-radius: 7px; padding: 0 13px; color: #55555e; background: transparent; font-size: 14px; cursor: pointer; }.nav-item:hover { background: #dedee4; }.nav-item.active { color: #bd2c76; background: #fff; box-shadow: 0 1px 3px #00000012; font-weight: 650; }
 .settings-content { min-width: 0; flex: 1; padding: 28px 34px 22px; box-sizing: border-box; display: flex; flex-direction: column; }.settings-header { padding-bottom: 18px; border-bottom: 1px solid #dedee3; }.eyebrow { margin: 0 0 5px; color: #c13a7c; font-size: 11px; font-weight: 700; }.settings-header h1 { margin: 0; font-size: 22px; }.settings-list { padding-top: 8px; }.setting-row { min-height: 76px; display: flex; align-items: center; justify-content: space-between; gap: 20px; border-bottom: 1px solid #e1e1e5; }.setting-row strong { font-size: 14px; }.setting-row p { margin: 6px 0 0; color: #85858e; font-size: 12px; }.switch { width: 38px; height: 22px; padding: 2px; border: 0; border-radius: 12px; background: #c6c6cc; cursor: pointer; }.switch span { display: block; width: 18px; height: 18px; border-radius: 50%; background: white; transition: transform .18s; }.switch.on { background: #d53e8b; }.switch.on span { transform: translateX(16px); }
 .appearance-workspace { min-height: 0; flex: 1; display: flex; flex-direction: column; }.appearance-toolbar { display: flex; align-items: end; gap: 14px; padding: 14px 0; border-bottom: 1px solid #dedee3; }.appearance-toolbar label { display: grid; gap: 5px; font-size: 11px; color: #777780; }.appearance-toolbar select { width: 150px; }.theme-name { width: 180px; }.file-actions { margin-left: auto; display: flex; gap: 6px; }.icon-command { height: 31px; display: flex; align-items: center; gap: 6px; border: 1px solid #ceced4; border-radius: 5px; padding: 0 10px; background: #fff; color: #55555e; cursor: pointer; }
 .appearance-grid { min-height: 0; flex: 1; display: grid; grid-template-columns: minmax(470px, 1.08fr) minmax(360px, .92fr); gap: 24px; padding-top: 14px; }.editor-pane { min-height: 0; overflow-y: auto; padding: 0 10px 8px 0; }.editor-section { padding: 0 0 16px; margin-bottom: 16px; border-bottom: 1px solid #dfdfe4; }.editor-section h2 { margin: 0 0 11px; font-size: 13px; color: #4d4d55; }.control-grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 10px 12px; }.control-grid label { min-width: 0; display: grid; gap: 5px; color: #7b7b84; font-size: 11px; }.control-grid label.wide { grid-column: span 2; }.control-grid input:not([type="checkbox"]):not([type="range"]), .control-grid select, .appearance-toolbar input, .appearance-toolbar select { box-sizing: border-box; width: 100%; height: 31px; border: 1px solid #cfcfd5; border-radius: 4px; padding: 0 7px; background: white; color: #33333a; }.control-grid input[type="color"] { padding: 3px; }.control-grid input[type="range"] { width: 100%; }.check-label { display: flex !important; align-items: center; gap: 7px !important; min-height: 31px; color: #55555e !important; }.check-label input { accent-color: #d13c86; }.range-value { color: #55555e; }.paint-controls { grid-template-columns: repeat(3, minmax(0, 1fr)); }
 .preview-pane { position: sticky; top: 0; align-self: start; min-height: 0; display: flex; flex-direction: column; }.preview-title, .source-header { height: 28px; display: flex; align-items: center; justify-content: space-between; color: #686871; font-size: 12px; font-weight: 650; }.theme-preview { position: relative; height: 176px; display: flex; align-items: center; overflow: hidden; background: #15151a; border: 1px solid #2e2e35; }.theme-preview::before { content: ''; position: absolute; inset: 0; background: linear-gradient(135deg, #23232b, #0d0d11 60%, #2b1823); }.theme-preview .amdl-lyrics { position: relative; width: 100%; padding: 20px; box-sizing: border-box; }.preview-progress { position: absolute; right: 0; bottom: 0; left: 0; height: 3px; background: #ffffff20; }.preview-progress > div { height: 100%; }.source-header { margin-top: 10px; }.text-command { border: 0; background: transparent; color: #bd2c76; cursor: pointer; }.css-editor { min-height: 110px; flex: 1; resize: none; border: 1px solid #cfcfd5; border-radius: 5px; padding: 10px; background: #fff; color: #33333a; font: 11px/1.5 Consolas, monospace; user-select: text; }
 .logs-workspace { min-height: 0; flex: 1; display: flex; flex-direction: column; padding-top: 14px; }.logs-toolbar { display: flex; gap: 8px; padding-bottom: 12px; }.log-viewer { min-height: 0; flex: 1; resize: none; box-sizing: border-box; width: 100%; border: 1px solid #cfcfd5; border-radius: 5px; padding: 12px; background: #fff; color: #33333a; font: 12px/1.55 Consolas, "Cascadia Mono", monospace; user-select: text; white-space: pre; }
 .match-workspace { min-height: 0; flex: 1; display: flex; flex-direction: column; padding-top: 14px; }.now-playing-strip { min-height: 62px; display: flex; align-items: center; justify-content: space-between; gap: 20px; padding-bottom: 12px; border-bottom: 1px solid #dedee3; }.track-summary { min-width: 0; display: grid; gap: 3px; }.track-summary strong, .track-summary span, .track-summary small { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }.track-summary strong { font-size: 15px; color: #33333a; }.track-summary span { font-size: 12px; color: #676770; }.track-summary small { font-size: 11px; color: #92929a; }.match-quick-actions { display: flex; flex: 0 0 auto; gap: 7px; }.icon-command:disabled, .button:disabled { opacity: .45; cursor: default; }.match-search-form { display: grid; grid-template-columns: 1fr 1fr 1fr auto; align-items: end; gap: 10px; padding: 12px 0; }.match-search-form label { min-width: 0; display: grid; gap: 5px; color: #777780; font-size: 11px; }.match-search-form input { width: 100%; height: 31px; box-sizing: border-box; border: 1px solid #cfcfd5; border-radius: 4px; padding: 0 8px; background: white; color: #33333a; }.search-button, .apply-lyrics-button { display: flex; align-items: center; justify-content: center; gap: 6px; }.search-button { height: 31px; }.match-grid { min-height: 0; flex: 1; display: grid; grid-template-columns: minmax(0, 1.1fr) minmax(0, .9fr); gap: 16px; }.match-results, .lyrics-preview-pane { min-height: 0; display: flex; flex-direction: column; border-top: 1px solid #d8d8dd; }.pane-heading { height: 34px; flex: 0 0 34px; display: flex; align-items: center; justify-content: space-between; color: #55555e; font-size: 12px; font-weight: 650; }.pane-heading small { min-width: 0; max-width: 70%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: #92929a; font-weight: 400; }.match-results { overflow-y: auto; }.candidate-row { min-height: 48px; display: grid; grid-template-columns: minmax(120px, 1.25fr) minmax(90px, .9fr) minmax(90px, 1fr) 42px; align-items: center; gap: 8px; border: 0; border-bottom: 1px solid #e1e1e5; padding: 6px 8px; background: transparent; color: #73737c; text-align: left; cursor: pointer; font-size: 11px; }.candidate-row:hover { background: #ececf0; }.candidate-row.selected { background: #fff; box-shadow: inset 3px 0 #d13c86; color: #4d4d55; }.candidate-row > span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }.candidate-title { color: #33333a; font-size: 12px; font-weight: 650; }.candidate-row time { text-align: right; color: #92929a; }.match-placeholder { flex: 1; display: grid; place-items: center; color: #96969e; font-size: 12px; }.lyrics-preview { min-height: 0; flex: 1; resize: none; box-sizing: border-box; width: 100%; border: 1px solid #cfcfd5; border-radius: 4px; padding: 10px; background: #fff; color: #33333a; font: 12px/1.6 "Microsoft YaHei UI", sans-serif; user-select: text; white-space: pre-wrap; }.apply-lyrics-button { min-height: 32px; margin-top: 9px; align-self: flex-end; }
-.number-input { width: 58px; padding: 7px 8px; border: 1px solid #cfcfd5; border-radius: 5px; text-align: center; }.offset-input { width: 108px; padding: 7px 8px; border: 1px solid #cfcfd5; border-radius: 5px; text-align: right; }.about-panel { flex: 1; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 10px; color: #55555e; }.about-logo { color: #d9428b; font-size: 35px; font-weight: 800; }.settings-footer { padding-top: 14px; display: flex; justify-content: space-between; align-items: center; }.save-message { color: #bf357c; font-size: 12px; }.footer-actions { display: flex; gap: 9px; }.button { min-width: 70px; height: 32px; border-radius: 5px; padding: 0 14px; font-size: 13px; cursor: pointer; }.button.secondary { border: 1px solid #d0d0d5; background: white; color: #5d5d65; }.button.primary { border: 0; background: #d13c86; color: white; }
+.number-input { width: 58px; padding: 7px 8px; border: 1px solid #cfcfd5; border-radius: 5px; text-align: center; }.offset-input { width: 108px; padding: 7px 8px; border: 1px solid #cfcfd5; border-radius: 5px; text-align: right; }.about-panel { flex: 1; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 10px; color: #55555e; }.about-logo { width: 76px; height: 76px; border-radius: 18px; object-fit: cover; }.settings-footer { padding-top: 14px; display: flex; justify-content: space-between; align-items: center; }.save-message { color: #bf357c; font-size: 12px; }.footer-actions { display: flex; gap: 9px; }.button { min-width: 70px; height: 32px; border-radius: 5px; padding: 0 14px; font-size: 13px; cursor: pointer; }.button.secondary { border: 1px solid #d0d0d5; background: white; color: #5d5d65; }.button.primary { border: 0; background: #d13c86; color: white; }
 </style>

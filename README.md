@@ -43,13 +43,13 @@ Windows 原生 Apple Music 客户端虽然体验优秀，但一直缺失国人�
   - 🪶 极低的内存与 CPU 占用。
   - 📝 内置轻量级双文件轮转日志系统，方便排错与追溯。
 
-## 📸 界面预览 (Screenshots)
+## 📸 界面预览
 
 *(提示：在此处放置你的软件截图)*
 
-| 桌面歌词效果 | 强大的主题编辑器 | 手动匹配中心 |
+| 桌面歌词效果 | 强大的主题编辑器 | 手动匹配 |
 | :---: | :---: | :---: |
-| `<img src="docs/assets/lyrics-preview.png" width="250" />` | `<img src="docs/assets/settings-preview.png" width="250" />` | `<img src="docs/assets/match-preview.png" width="250" />` |
+| ![lyrics-preview](docs/assets/lyrics-preview.png) | ![settings-preview](docs/assets/settings-preview.png) | ![match-preview](docs/assets/match-preview.png) |
 
 ## 📥 安装与使用 (Installation & Usage)
 
@@ -88,3 +88,25 @@ pnpm tauri dev
 
 # 4. 编译 Release 版本
 pnpm tauri build
+```
+
+## 🗺️ 路线图
+[x] 核心 SMTC 状态监听与播放时间同步模型
+[x] 动态无边框透明窗口
+[x] 自身缓存机制、AM 缓存读取与 QQ 音乐 Providers 歌词获取
+[x] 多格式歌词解析与展示
+[x] 基于 Tailwind Grid 的现代化主题外观配置系统
+[x] 自动繁体转换和偏移调节
+[x] 双文件轮转本地日志系统
+[ ] 双行歌词支持
+[ ] TTML 逐词支持、平滑滚动与算法优化
+[ ] 更多自定义主题和歌词渠道支持
+......
+
+## 🤝 贡献与反馈
+欢迎提交 Issue 报告 Bug 或分享你的灵感，也随时欢迎提交 Pull Request 一起完善 AMDL！如果在歌词匹配或主题样式上有好的想法，请不要犹豫。
+
+## 📄 许可
+本项目采用 MIT License 协议开源。
+
+## Made with ❤️ by [月半菌](https://www.ybjun.com)

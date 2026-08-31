@@ -193,6 +193,27 @@ pub async fn refetch_qq_lyrics(app: AppHandle, track: TrackIdentity) -> Result<b
 }
 
 #[tauri::command]
+pub async fn apply_manual_lyrics(
+    app: AppHandle,
+    track: TrackIdentity,
+    candidate: QqSongCandidate,
+) -> Result<(), String> {
+    validate_track(&track)?;
+    let generation = begin_forced_request(&track, &app);
+    let document = qq_music::fetch_lyrics_by_song(&track, &candidate)
+        .await
+        .map_err(|error| format!("获取选定歌词失败: {error}"))?
+        .ok_or_else(|| "选定歌曲没有可用的时间轴歌词".to_string())?;
+    if !is_current_generation(generation) {
+        return Err("歌词请求已过期，请重新应用当前曲目".to_string());
+    }
+    local_cache_put(&document);
+    emit_loaded(&app, &document);
+    println!("[ManualLyrics] 已应用并覆盖普通缓存: track={track:?}");
+    Ok(())
+}
+
+#[tauri::command]
 pub async fn apply_custom_lyrics(
     app: AppHandle,
     track: TrackIdentity,
