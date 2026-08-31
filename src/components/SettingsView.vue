@@ -124,7 +124,37 @@
         </div>
       </div>
 
-      <div v-else class="about-panel"><img class="about-logo" :src="appIcon" alt="AMDL 软件图标" /><strong>Apple Music Desktop Lyrics</strong><span>桌面歌词工具</span><small>版本 1.0.0</small><small>作者：月半菌</small><small>amdl.ybjun.com</small></div>
+      <div v-else class="about-panel">
+        <div class="about-content">
+          <!-- 核心标志与版本信息 -->
+          <img class="about-logo" :src="appIcon" alt="AMDL 软件图标" />
+          <h1 class="about-app-name">Apple Music Desktop Lyrics</h1>
+          <p class="about-version">版本 {{ appVersion }}</p>
+
+          <div class="about-divider"></div>
+
+          <!-- 版权与作者信息 -->
+          <p class="about-copyright">
+            Designed & Developed by 
+            <a href="https://www.ybjun.com" @click.prevent="openExternal('https://www.ybjun.com')">月半菌</a>
+          </p>
+          
+          <p class="about-license">© 2026 月半菌. All rights reserved.</p>
+          <p class="about-license">本软件遵循 MIT 开源协议发布，详见 <a href="https://opensource.org/licenses/MIT" @click.prevent="openExternal('https://opensource.org/licenses/MIT')">LICENSE</a>。</p>
+          <!-- 外部链接与操作区 -->
+          <div class="about-links">
+            <button class="link-button" @click.prevent="openExternal('https://amdl.ybjun.com')">
+              <Globe :size="15" /> 官方网站
+            </button>
+            <button class="link-button" @click.prevent="openExternal('https://github.com/ElliottZhao666666/AM-Desktop-Lyrics')">
+              <GitBranch :size="15" /> GitHub 仓库
+            </button>
+            <button class="link-button" type="button" disabled title="检查更新功能即将推出">
+              <RefreshCw :size="15" /> 检查更新
+            </button>
+          </div>
+        </div>
+      </div>
 
       <footer class="settings-footer"><span class="save-message">{{ message }}</span><div v-if="activeSection === 'general' || activeSection === 'appearance'" class="footer-actions"><button class="button secondary" @click="closeWindow">取消</button><button class="button primary" @click="saveSettings">应用</button></div></footer>
     </section>
@@ -137,11 +167,14 @@ import { invoke } from '@tauri-apps/api/core';
 import { listen, type UnlistenFn } from '@tauri-apps/api/event';
 import { message as showMessage, open, save } from '@tauri-apps/plugin-dialog';
 import { getCurrentWindow } from '@tauri-apps/api/window';
-import { Check, CloudDownload, Database, FileText, FolderOpen, Info, Palette, RefreshCw, Save, Search, Settings2 } from '@lucide/vue';
+import { openUrl } from '@tauri-apps/plugin-opener';
+import { Check, CloudDownload, Database, FileText, FolderOpen, Info, Palette, RefreshCw, Save, Search, Settings2, Globe, GitBranch } from '@lucide/vue';
 import type { AppSettings, MediaSnapshotPayload, MediaStatePayload, QqLyricsPreview, QqSongCandidate, RuntimeLyricsTimeOffset, ThemeFile, TrackIdentity } from '../types';
 import { buildThemeCss, cloneEditor, DEFAULT_EDITOR, PRESETS, type ThemeEditor } from '../theme';
 import TextStyleEditor from './TextStyleEditor.vue';
 import appIcon from '../../app-icon.png';
+
+const appVersion = __APP_VERSION__;
 
 const sections = [{ id: 'general', label: '通用', icon: Settings2 }, { id: 'appearance', label: '外观', icon: Palette }, { id: 'lyricsMatch', label: '匹配歌词', icon: Search }, { id: 'logs', label: '日志', icon: FileText }, { id: 'about', label: '关于', icon: Info }] as const;
 const activeSection = ref<typeof sections[number]['id']>('general');
@@ -362,12 +395,160 @@ async function saveSettings() {
   try { await invoke('save_settings', { settings: settings.value }); message.value = '已应用'; setTimeout(() => { message.value = ''; }, 1800); } catch (error) { message.value = String(error); }
 }
 function closeWindow() { getCurrentWindow().hide(); }
+async function openExternal(url: string) {
+  try { await openUrl(url); } catch (error) { message.value = String(error); }
+}
 </script>
 
 <style scoped>
 .settings-shell { width: 100vw; height: 100vh; display: flex; overflow: hidden; color: #24242a; background: #f4f4f6; font-family: "Segoe UI", "Microsoft YaHei", sans-serif; }
 .settings-sidebar { width: 176px; flex: 0 0 176px; padding: 28px 14px; box-sizing: border-box; background: #e9e9ed; border-right: 1px solid #d8d8dd; }.brand-mark { display: flex; align-items: center; gap: 9px; margin: 0 14px 30px; font-size: 18px; font-weight: 750; color: #d9428b; }.brand-mark img { width: 28px; height: 28px; border-radius: 7px; }.nav-item { width: 100%; height: 42px; display: flex; align-items: center; gap: 11px; border: 0; border-radius: 7px; padding: 0 13px; color: #55555e; background: transparent; font-size: 14px; cursor: pointer; }.nav-item:hover { background: #dedee4; }.nav-item.active { color: #bd2c76; background: #fff; box-shadow: 0 1px 3px #00000012; font-weight: 650; }
 .settings-content { min-width: 0; flex: 1; padding: 28px 34px 22px; box-sizing: border-box; display: flex; flex-direction: column; }.settings-header { padding-bottom: 18px; border-bottom: 1px solid #dedee3; }.eyebrow { margin: 0 0 5px; color: #c13a7c; font-size: 11px; font-weight: 700; }.settings-header h1 { margin: 0; font-size: 22px; }.settings-list { padding-top: 8px; }.setting-row { min-height: 76px; display: flex; align-items: center; justify-content: space-between; gap: 20px; border-bottom: 1px solid #e1e1e5; }.setting-row strong { font-size: 14px; }.setting-row p { margin: 6px 0 0; color: #85858e; font-size: 12px; }.switch { width: 38px; height: 22px; padding: 2px; border: 0; border-radius: 12px; background: #c6c6cc; cursor: pointer; }.switch span { display: block; width: 18px; height: 18px; border-radius: 50%; background: white; transition: transform .18s; }.switch.on { background: #d53e8b; }.switch.on span { transform: translateX(16px); }
+/* --- 经典“关于”页面 (Standard About Interface) --- */
+.about-panel {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  padding: 20px;
+  overflow-y: auto;
+}
+
+.about-content {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  width: 100%;
+  max-width: 460px;
+  text-align: center;
+}
+
+.about-logo {
+  width: 96px;
+  height: 96px;
+  border-radius: 22px;
+  box-shadow: 0 10px 28px rgba(189, 44, 118, 0.22);
+  margin-bottom: 22px;
+  user-select: none;
+  -webkit-user-drag: none;
+}
+
+.about-app-name {
+  font-size: 24px;
+  font-weight: 700;
+  color: #24242a;
+  margin: 0 0 6px 0;
+  letter-spacing: -0.3px;
+}
+
+.about-version {
+  font-size: 13px;
+  color: #85858e;
+  margin: 0 0 28px 0;
+  font-family: Consolas, "Cascadia Mono", monospace;
+}
+
+/* 优雅的视觉分割线 */
+.about-divider {
+  width: 48px;
+  height: 3px;
+  background: #dedee3;
+  margin: 0 0 28px 0;
+  border-radius: 3px;
+}
+
+.about-copyright {
+  font-size: 13px;
+  color: #55555e;
+  margin: 0 0 18px 0;
+}
+
+.about-copyright a {
+  color: #bd2c76;
+  text-decoration: none;
+  font-weight: 600;
+  transition: color 0.2s;
+}
+
+.about-copyright a:hover {
+  color: #d13c86;
+  text-decoration: underline;
+}
+
+/* 居中的按钮式链接 */
+.about-links {
+  display: flex;
+  gap: 12px;
+  margin-bottom: 36px;
+}
+
+.about-license {
+  font-size: 12px;
+  color: #777780;
+  margin: 0 0 6px 0;
+}
+
+.link-button {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 7px 16px;
+  background: #fff;
+  border: 1px solid #d8d8dd;
+  border-radius: 8px;
+  color: #414149;
+  font-size: 12px;
+  cursor: pointer;
+  transition: all 0.2s ease;
+  box-shadow: 0 2px 6px rgba(36, 36, 42, 0.03);
+}
+
+.link-button:hover {
+  background: #fafafc;
+  border-color: #cfcfd5;
+  box-shadow: 0 4px 10px rgba(36, 36, 42, 0.06);
+  transform: translateY(-1px);
+}
+
+/* 微信公众号横幅专门适配 */
+.about-wechat-banner {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 12px;
+  margin-bottom: 40px;
+  padding: 16px 20px;
+  background: #fff;
+  border: 1px solid #dedee3;
+  border-radius: 12px;
+  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.02);
+  width: 100%;
+  box-sizing: border-box;
+}
+
+.about-wechat-banner p {
+  margin: 0;
+  font-size: 12px;
+  color: #777780;
+  letter-spacing: 0.5px;
+}
+
+.about-wechat-banner img {
+  width: 100%;
+  height: auto;
+  border-radius: 6px;
+  display: block;
+  /* 确保 1280x468 的图像清晰且不越界 */
+  object-fit: contain; 
+}
+
+/* 底部操作按钮 */
+.update-button {
+  padding: 0 48px;
+  height: 34px;
+  font-size: 13px;
+}
 .appearance-workspace { min-height: 0; flex: 1; display: flex; flex-direction: column; }.appearance-toolbar { display: flex; align-items: end; gap: 14px; padding: 14px 0; border-bottom: 1px solid #dedee3; }.appearance-toolbar label { display: grid; gap: 5px; font-size: 11px; color: #777780; }.appearance-toolbar select { width: 150px; }.theme-name { width: 180px; }.file-actions { margin-left: auto; display: flex; gap: 6px; }.icon-command { height: 31px; display: flex; align-items: center; gap: 6px; border: 1px solid #ceced4; border-radius: 5px; padding: 0 10px; background: #fff; color: #55555e; cursor: pointer; }
 .appearance-grid { min-height: 0; flex: 1; display: grid; grid-template-columns: minmax(470px, 1.08fr) minmax(360px, .92fr); gap: 24px; padding-top: 14px; }.editor-pane { min-height: 0; overflow-y: auto; padding: 0 10px 8px 0; }.editor-section { padding: 0 0 16px; margin-bottom: 16px; border-bottom: 1px solid #dfdfe4; }.editor-section h2 { margin: 0 0 11px; font-size: 13px; color: #4d4d55; }.control-grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 10px 12px; }.control-grid label { min-width: 0; display: grid; gap: 5px; color: #7b7b84; font-size: 11px; }.control-grid label.wide { grid-column: span 2; }.control-grid input:not([type="checkbox"]):not([type="range"]), .control-grid select, .appearance-toolbar input, .appearance-toolbar select { box-sizing: border-box; width: 100%; height: 31px; border: 1px solid #cfcfd5; border-radius: 4px; padding: 0 7px; background: white; color: #33333a; }.control-grid input[type="color"] { padding: 3px; }.control-grid input[type="range"] { width: 100%; }.check-label { display: flex !important; align-items: center; gap: 7px !important; min-height: 31px; color: #55555e !important; }.check-label input { accent-color: #d13c86; }.range-value { color: #55555e; }.paint-controls { grid-template-columns: repeat(3, minmax(0, 1fr)); }
 .preview-pane { position: sticky; top: 0; align-self: start; min-height: 0; display: flex; flex-direction: column; }.preview-title, .source-header { height: 28px; display: flex; align-items: center; justify-content: space-between; color: #686871; font-size: 12px; font-weight: 650; }.theme-preview { position: relative; height: 176px; display: flex; align-items: center; overflow: hidden; background: #15151a; border: 1px solid #2e2e35; }.theme-preview::before { content: ''; position: absolute; inset: 0; background: linear-gradient(135deg, #23232b, #0d0d11 60%, #2b1823); }.theme-preview .amdl-lyrics { position: relative; width: 100%; padding: 20px; box-sizing: border-box; }.preview-progress { position: absolute; right: 0; bottom: 0; left: 0; height: 3px; background: #ffffff20; }.preview-progress > div { height: 100%; }.source-header { margin-top: 10px; }.text-command { border: 0; background: transparent; color: #bd2c76; cursor: pointer; }.css-editor { min-height: 110px; flex: 1; resize: none; border: 1px solid #cfcfd5; border-radius: 5px; padding: 10px; background: #fff; color: #33333a; font: 11px/1.5 Consolas, monospace; user-select: text; }

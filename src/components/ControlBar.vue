@@ -14,7 +14,9 @@
       </div>
       <div class="flex flex-shrink-0 items-center gap-1 text-white">
         <span class="w-10 text-right text-xs tabular-nums text-white/60">{{ formatTime(positionMs) }}</span>
-        <span class="w-10 text-right text-xs tabular-nums text-white/60">{{ formatTime(durationMs) }}</span>
+        <span class="mx-1 h-3 w-px bg-white/25" aria-hidden="true" />
+        <span class="w-10 text-left text-xs tabular-nums text-white/60">{{ formatTime(durationMs) }}</span>
+        <span class="mx-1 h-4 w-px bg-white/25" aria-hidden="true" />
         <button class="flex h-7 w-7 items-center justify-center transition-colors hover:text-pink-400 active:scale-90" @mousedown.stop @click="emit('prev')" title="上一曲"><SkipBack :size="16" /></button>
         <button class="flex h-7 w-7 items-center justify-center transition-colors hover:text-pink-400 active:scale-90" @mousedown.stop @click="emit('playPause')" title="播放/暂停"><Pause v-if="isPlaying" :size="17" /><Play v-else :size="17" /></button>
         <button class="flex h-7 w-7 items-center justify-center transition-colors hover:text-pink-400 active:scale-90" @mousedown.stop @click="emit('next')" title="下一曲"><SkipForward :size="16" /></button>
