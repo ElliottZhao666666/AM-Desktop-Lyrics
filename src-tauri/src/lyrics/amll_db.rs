@@ -26,7 +26,7 @@ fn client() -> &'static Client {
         Client::builder()
             .connect_timeout(Duration::from_secs(5))
             .http1_only()
-            .user_agent("AMDL/1.0.0")
+            .user_agent("AMDL/0.9.0")
             .build()
             .expect("valid HTTP client")
     })

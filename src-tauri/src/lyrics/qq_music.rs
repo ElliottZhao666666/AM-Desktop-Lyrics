@@ -216,7 +216,7 @@ fn create_client() -> Result<Client, Box<dyn Error + Send + Sync>> {
         .connect_timeout(Duration::from_secs(12))
         .timeout(Duration::from_secs(30))
         .http1_only()
-        .user_agent("AMDL/1.0.0")
+        .user_agent("AMDL/0.9.0")
         .build()?;
     println!("[QQ] HTTP 客户端已创建: http1_only=true, connect_timeout=12s, timeout=30s");
     Ok(client)
