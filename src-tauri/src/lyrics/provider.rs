@@ -5,12 +5,21 @@ use tauri::{AppHandle, Emitter};
 
 use crate::domain::{LyricsDocument, LyricsLoadState, LyricsStatusPayload, TrackIdentity};
 use crate::lyrics::cache;
+use crate::lyrics::custom_pool;
 use crate::lyrics::qq_music;
+use crate::lyrics::qq_music::{QqLyricsPreview, QqSongCandidate};
 
 static LYRICS_REQUEST_GENERATION: AtomicU64 = AtomicU64::new(0);
 static LAST_REQUESTED_TRACK: Mutex<Option<TrackIdentity>> = Mutex::new(None);
 const LOCAL_CACHE_LIMIT: usize = 50;
 static LOCAL_LYRICS_CACHE: Mutex<Option<Vec<LyricsDocument>>> = Mutex::new(None);
+
+pub fn enter_waiting_state() {
+    LYRICS_REQUEST_GENERATION.fetch_add(1, Ordering::SeqCst);
+    if let Ok(mut last_track) = LAST_REQUESTED_TRACK.lock() {
+        *last_track = None;
+    }
+}
 
 /// 搜索、下载、解析并发送歌词；旧请求返回后会因 generation 校验而丢弃。
 pub fn fetch_and_emit_lyrics(track: TrackIdentity, app_handle: AppHandle) {
@@ -34,9 +43,23 @@ pub fn fetch_and_emit_lyrics(track: TrackIdentity, app_handle: AppHandle) {
             return;
         }
 
+        match custom_pool::get(&track) {
+            Ok(Some(document)) => {
+                println!("[CustomLyrics] 命中永久自定义歌词: track={track:?}");
+                if LYRICS_REQUEST_GENERATION.load(Ordering::SeqCst) == generation {
+                    emit_loaded(&app_handle, &document);
+                }
+                return;
+            }
+            Ok(None) => {}
+            Err(error) => eprintln!("[CustomLyrics] 读取永久自定义歌词失败，继续自动匹配: {error}"),
+        }
+
         if let Some(document) = local_cache_get(&track) {
             println!("[LyricsCache] 命中自身缓存: track={track:?}");
-            emit_loaded(&app_handle, &document);
+            if LYRICS_REQUEST_GENERATION.load(Ordering::SeqCst) == generation {
+                emit_loaded(&app_handle, &document);
+            }
             return;
         }
         println!(
@@ -98,6 +121,124 @@ pub fn fetch_and_emit_lyrics(track: TrackIdentity, app_handle: AppHandle) {
     });
 }
 
+#[tauri::command]
+pub async fn search_qq_lyrics(track: TrackIdentity) -> Result<Vec<QqSongCandidate>, String> {
+    validate_track(&track)?;
+    qq_music::search_songs(&track)
+        .await
+        .map_err(|error| format!("搜索 Q音歌曲失败: {error}"))
+}
+
+#[tauri::command]
+pub async fn preview_qq_lyrics(candidate: QqSongCandidate) -> Result<QqLyricsPreview, String> {
+    qq_music::preview_lyrics(candidate)
+        .await
+        .map_err(|error| format!("获取 Q音歌词预览失败: {error}"))?
+        .ok_or_else(|| "此歌曲没有可用的时间轴歌词".to_string())
+}
+
+#[tauri::command]
+pub async fn rescan_local_lyrics(app: AppHandle, track: TrackIdentity) -> Result<bool, String> {
+    validate_track(&track)?;
+    let generation = begin_forced_request(&track, &app);
+    let requested_at = SystemTime::now();
+    let cache_track = track.clone();
+    let document = tauri::async_runtime::spawn_blocking(move || {
+        cache::fetch_lyrics(&cache_track, requested_at)
+    })
+    .await
+    .map_err(|error| format!("本地缓存扫描任务失败: {error}"))?
+    .map_err(|error| format!("扫描 Apple Music 本地缓存失败: {error}"))?;
+    if !is_current_generation(generation) {
+        return Ok(false);
+    }
+    if let Some(document) = document {
+        local_cache_put(&document);
+        emit_loaded(&app, &document);
+        Ok(true)
+    } else {
+        emit_status(
+            &app,
+            &track,
+            LyricsLoadState::NotFound,
+            Some("Apple Music 本地缓存中没有找到当前歌曲歌词".to_string()),
+        );
+        Ok(false)
+    }
+}
+
+#[tauri::command]
+pub async fn refetch_qq_lyrics(app: AppHandle, track: TrackIdentity) -> Result<bool, String> {
+    validate_track(&track)?;
+    let generation = begin_forced_request(&track, &app);
+    let document = qq_music::fetch_lyrics(&track)
+        .await
+        .map_err(|error| format!("重新获取 Q音歌词失败: {error}"))?;
+    if !is_current_generation(generation) {
+        return Ok(false);
+    }
+    if let Some(document) = document {
+        local_cache_put(&document);
+        emit_loaded(&app, &document);
+        Ok(true)
+    } else {
+        emit_status(
+            &app,
+            &track,
+            LyricsLoadState::NotFound,
+            Some("Q音没有找到匹配歌词".to_string()),
+        );
+        Ok(false)
+    }
+}
+
+#[tauri::command]
+pub async fn apply_custom_lyrics(
+    app: AppHandle,
+    track: TrackIdentity,
+    candidate: QqSongCandidate,
+) -> Result<(), String> {
+    validate_track(&track)?;
+    let generation = begin_forced_request(&track, &app);
+    let document = qq_music::fetch_lyrics_by_song(&track, &candidate)
+        .await
+        .map_err(|error| format!("获取选定歌词失败: {error}"))?
+        .ok_or_else(|| "选定歌曲没有可用的时间轴歌词".to_string())?;
+    if !is_current_generation(generation) {
+        return Err("歌词请求已过期，请重新应用当前曲目".to_string());
+    }
+    custom_pool::save(&track, candidate, document.clone())?;
+    local_cache_put(&document);
+    emit_loaded(&app, &document);
+    println!("[CustomLyrics] 已保存永久绑定: track={track:?}");
+    Ok(())
+}
+
+fn begin_forced_request(track: &TrackIdentity, app: &AppHandle) -> u64 {
+    let generation = LYRICS_REQUEST_GENERATION.fetch_add(1, Ordering::SeqCst) + 1;
+    if let Ok(mut last_track) = LAST_REQUESTED_TRACK.lock() {
+        *last_track = Some(track.clone());
+    }
+    emit_status(app, track, LyricsLoadState::Loading, None);
+    generation
+}
+
+fn is_current_generation(generation: u64) -> bool {
+    LYRICS_REQUEST_GENERATION.load(Ordering::SeqCst) == generation
+}
+
+fn validate_track(track: &TrackIdentity) -> Result<(), String> {
+    if track.title.trim().is_empty()
+        || track.artist.trim().is_empty()
+        || track.title.contains("正在连接")
+        || track.title.starts_with("等待 ")
+    {
+        Err("当前没有可匹配的播放曲目".to_string())
+    } else {
+        Ok(())
+    }
+}
+
 fn emit_loaded(app_handle: &AppHandle, document: &LyricsDocument) {
     // 推送给前端
     if let Err(e) = app_handle.emit("lyrics-loaded", document) {
@@ -109,19 +250,11 @@ fn emit_loaded(app_handle: &AppHandle, document: &LyricsDocument) {
 }
 
 fn local_cache_path() -> Option<std::path::PathBuf> {
-    std::env::var_os("LOCALAPPDATA").map(|path| {
-        std::path::PathBuf::from(path)
-            .join("AM-Desktop-Lyrics")
-            .join("lyrics-cache.json")
-    })
+    crate::app_paths::lyrics_cache_file().ok()
 }
 
 fn local_cache_limit() -> usize {
-    let Some(path) = std::env::var_os("LOCALAPPDATA").map(|value| {
-        std::path::PathBuf::from(value)
-            .join("AM-Desktop-Lyrics")
-            .join("settings.json")
-    }) else {
+    let Ok(path) = crate::app_paths::settings_file() else {
         return 10;
     };
     let Ok(encoded) = std::fs::read_to_string(path) else {

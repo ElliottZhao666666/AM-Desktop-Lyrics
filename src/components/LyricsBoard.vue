@@ -70,6 +70,7 @@ const displayMode = computed<'status' | 'intro' | 'interlude' | 'line'>(() => {
 });
 
 const displayText = computed(() => {
+  if (props.title === '等待播放...' || (!props.title.trim() && !props.artist.trim())) return '等待播放...';
   if (displayMode.value === 'intro') return [props.title, props.artist].filter(Boolean).join(' - ');
   if (displayMode.value === 'interlude') return '● ● ●';
   if (props.lyricsState === 'loading') return '正在搜索歌词...';

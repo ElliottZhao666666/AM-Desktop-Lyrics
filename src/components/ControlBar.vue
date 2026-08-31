@@ -22,7 +22,7 @@
         <button class="flex h-7 w-7 items-center justify-center transition-colors hover:text-pink-400 active:scale-90" @mousedown.stop @click="emit('lyricsEarlier')" title="歌词提前 500ms"><ArrowLeft :size="16" /></button>
         <button class="flex h-7 w-7 items-center justify-center transition-colors hover:text-pink-400 active:scale-90" @mousedown.stop @click="emit('lyricsLater')" title="歌词延后 500ms"><ArrowRight :size="16" /></button>
         <span class="mx-1 h-4 w-px bg-white/25" aria-hidden="true" />
-        <button class="flex h-7 w-7 items-center justify-center transition-colors hover:text-pink-400 active:scale-90" @mousedown.stop @click="emit('toggleLock')" :title="locked ? '解锁窗口拖动' : '锁定窗口拖动'"><Lock v-if="locked" :size="15" /><Unlock v-else :size="15" /></button>
+        <button class="flex h-7 w-7 items-center justify-center transition-colors hover:text-pink-400 active:scale-90" @mousedown.stop @click="emit('toggleLock')" title="锁定并启用鼠标穿透"><Unlock :size="15" /></button>
         <button class="flex h-7 w-7 items-center justify-center text-white/70 transition-colors hover:text-white active:scale-90" @mousedown.stop @click="emit('settings')" title="设置"><Settings :size="16" /></button>
         <button class="flex h-7 w-7 items-center justify-center transition-colors hover:text-red-400 active:scale-90" @mousedown.stop @click="emit('close')" title="关闭"><X :size="17" /></button>
       </div>
@@ -36,7 +36,7 @@
 <script setup lang="ts">
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue';
 import { getCurrentWindow } from '@tauri-apps/api/window';
-import { ArrowLeft, ArrowRight, Lock, Pause, Play, Settings, SkipBack, SkipForward, Unlock, X } from '@lucide/vue';
+import { ArrowLeft, ArrowRight, Pause, Play, Settings, SkipBack, SkipForward, Unlock, X } from '@lucide/vue';
 
 const props = defineProps<{
   show: boolean;
@@ -45,7 +45,6 @@ const props = defineProps<{
   isPlaying: boolean;
   positionMs: number;
   durationMs: number;
-  locked: boolean;
 }>();
 const emit = defineEmits(['prev', 'playPause', 'next', 'lyricsEarlier', 'lyricsLater', 'toggleLock', 'settings', 'close']);
 const progressPercent = computed(() => props.durationMs > 0 ? Math.min(props.positionMs / props.durationMs * 100, 100) : 0);
@@ -75,7 +74,7 @@ function formatTime(ms: number): string {
   return `${Math.floor(totalSeconds / 60)}:${(totalSeconds % 60).toString().padStart(2, '0')}`;
 }
 async function startWindowDrag(event: MouseEvent) {
-  if (event.button !== 0 || props.locked) return;
+  if (event.button !== 0) return;
   try {
     await getCurrentWindow().startDragging();
   } catch (error) {

@@ -68,25 +68,81 @@
         <component :is="'style'">{{ settings.themeCss }}</component>
       </div>
 
-      <div v-else class="about-panel"><div class="about-logo">AMDL</div><strong>Apple Music Desktop Lyrics</strong><span>桌面歌词工具</span><small>版本 0.1.0</small></div>
+      <div v-else-if="activeSection === 'logs'" class="logs-workspace">
+        <div class="logs-toolbar">
+          <button class="icon-command" title="重新读取当前日志" @click="refreshLog"><RefreshCw :size="16" />刷新日志</button>
+          <button class="icon-command" title="在资源管理器中打开日志目录" @click="openLogDirectory"><FolderOpen :size="16" />打开日志目录</button>
+        </div>
+        <textarea :value="logText" class="log-viewer" readonly spellcheck="false" aria-label="当前运行日志" />
+      </div>
 
-      <footer class="settings-footer"><span class="save-message">{{ message }}</span><div class="footer-actions"><button class="button secondary" @click="closeWindow">取消</button><button class="button primary" @click="saveSettings">应用</button></div></footer>
+      <div v-else-if="activeSection === 'lyricsMatch'" class="match-workspace">
+        <div class="now-playing-strip">
+          <div class="track-summary">
+            <strong>{{ currentTrack.title || '等待播放...' }}</strong>
+            <span>{{ currentTrack.artist || '暂无歌手信息' }}</span>
+            <small>{{ currentTrack.album || '暂无专辑信息' }}</small>
+          </div>
+          <div class="match-quick-actions">
+            <button class="icon-command" :disabled="!canMatch || matchBusy" @click="rescanLocalLyrics"><Database :size="16" />重新扫描本地缓存</button>
+            <button class="icon-command" :disabled="!canMatch || matchBusy" @click="refetchQqLyrics"><CloudDownload :size="16" />重新获取 Q音歌词</button>
+          </div>
+        </div>
+
+        <form class="match-search-form" @submit.prevent="searchLyrics">
+          <label>歌名<input v-model="matchQuery.title" autocomplete="off" /></label>
+          <label>歌手<input v-model="matchQuery.artist" autocomplete="off" /></label>
+          <label>专辑<input v-model="matchQuery.album" autocomplete="off" /></label>
+          <button class="button primary search-button" type="submit" :disabled="matchBusy || !matchQuery.title.trim()"><Search :size="16" />搜索</button>
+        </form>
+
+        <div class="match-grid">
+          <section class="match-results" aria-label="Q音搜索结果">
+            <div class="pane-heading"><span>搜索结果</span><small>{{ matchCandidates.length }} 首</small></div>
+            <div v-if="matchBusy && !matchCandidates.length" class="match-placeholder">正在请求 Q音...</div>
+            <div v-else-if="!matchCandidates.length" class="match-placeholder">输入曲目信息后开始搜索</div>
+            <button
+              v-for="candidate in matchCandidates"
+              :key="candidate.songMid"
+              type="button"
+              class="candidate-row"
+              :class="{ selected: selectedCandidate?.songMid === candidate.songMid }"
+              @click="selectCandidate(candidate)"
+            >
+              <span class="candidate-title">{{ candidate.track.title }}</span>
+              <span>{{ candidate.track.artist || '未知歌手' }}</span>
+              <span>{{ candidate.track.album || '未知专辑' }}</span>
+              <time>{{ formatDuration(candidate.durationMs) }}</time>
+            </button>
+          </section>
+
+          <section class="lyrics-preview-pane">
+            <div class="pane-heading"><span>歌词全文预览</span><small>{{ selectedCandidate?.track.title || '未选择' }}</small></div>
+            <textarea :value="previewText" class="lyrics-preview" readonly spellcheck="false" aria-label="选中歌曲歌词全文" />
+            <button class="button primary apply-lyrics-button" :disabled="!selectedCandidate || !previewText || matchBusy || !canMatch" @click="applySelectedLyrics"><Check :size="16" />应用此歌词</button>
+          </section>
+        </div>
+      </div>
+
+      <div v-else class="about-panel"><div class="about-logo">AMDL</div><strong>Apple Music Desktop Lyrics</strong><span>桌面歌词工具</span><small>版本 1.0.0</small><small>作者：月半菌</small><small>amdl.ybjun.com</small></div>
+
+      <footer class="settings-footer"><span class="save-message">{{ message }}</span><div v-if="activeSection === 'general' || activeSection === 'appearance'" class="footer-actions"><button class="button secondary" @click="closeWindow">取消</button><button class="button primary" @click="saveSettings">应用</button></div></footer>
     </section>
   </main>
 </template>
 
 <script setup lang="ts">
-import { computed, onMounted, onUnmounted, ref } from 'vue';
+import { computed, onMounted, onUnmounted, ref, watch } from 'vue';
 import { invoke } from '@tauri-apps/api/core';
 import { listen, type UnlistenFn } from '@tauri-apps/api/event';
-import { open, save } from '@tauri-apps/plugin-dialog';
+import { message as showMessage, open, save } from '@tauri-apps/plugin-dialog';
 import { getCurrentWindow } from '@tauri-apps/api/window';
-import { FolderOpen, Info, Palette, Save, Settings2 } from '@lucide/vue';
-import type { AppSettings, RuntimeLyricsTimeOffset, ThemeFile } from '../types';
+import { Check, CloudDownload, Database, FileText, FolderOpen, Info, Palette, RefreshCw, Save, Search, Settings2 } from '@lucide/vue';
+import type { AppSettings, MediaSnapshotPayload, MediaStatePayload, QqLyricsPreview, QqSongCandidate, RuntimeLyricsTimeOffset, ThemeFile, TrackIdentity } from '../types';
 import { buildThemeCss, cloneEditor, DEFAULT_EDITOR, PRESETS, type ThemeEditor } from '../theme';
 import TextStyleEditor from './TextStyleEditor.vue';
 
-const sections = [{ id: 'general', label: '常用', icon: Settings2 }, { id: 'appearance', label: '外观', icon: Palette }, { id: 'about', label: '关于', icon: Info }] as const;
+const sections = [{ id: 'general', label: '常用', icon: Settings2 }, { id: 'appearance', label: '外观', icon: Palette }, { id: 'lyricsMatch', label: '匹配歌词', icon: Search }, { id: 'logs', label: '日志', icon: FileText }, { id: 'about', label: '关于', icon: Info }] as const;
 const activeSection = ref<typeof sections[number]['id']>('general');
 const settings = ref<AppSettings>({
   autoConvertTraditionalToSimplified: true,
@@ -102,11 +158,24 @@ const selectedPreset = ref('default');
 const customFontFamily = ref('');
 const systemFonts = ref<string[]>(['Microsoft YaHei UI']);
 const message = ref('');
+const logText = ref('');
+const currentTrack = ref<TrackIdentity>({ title: '等待播放...', artist: '', album: null });
+const matchQuery = ref({ title: '', artist: '', album: '' });
+const matchCandidates = ref<QqSongCandidate[]>([]);
+const selectedCandidate = ref<QqSongCandidate | null>(null);
+const previewText = ref('');
+const matchBusy = ref(false);
 const currentSection = computed(() => sections.find((item) => item.id === activeSection.value) ?? sections[0]);
+const canMatch = computed(() => Boolean(currentTrack.value.title.trim() && currentTrack.value.artist.trim() && currentTrack.value.title !== '等待播放...'));
 let unlistenLyricsTimeOffset: UnlistenFn | null = null;
+let unlistenMediaState: UnlistenFn | null = null;
 let lyricsTimeOffsetRevision = -1;
 let latestLyricsTimeOffset: RuntimeLyricsTimeOffset = { offsetMs: 0, revision: -1 };
 let pendingLyricsOffsetUpdate: Promise<void> = Promise.resolve();
+
+watch(activeSection, (section) => {
+  if (section === 'logs') void refreshLog();
+});
 
 function applyLyricsTimeOffset(payload: RuntimeLyricsTimeOffset) {
   if (payload.revision < lyricsTimeOffsetRevision) return;
@@ -120,20 +189,94 @@ onMounted(async () => {
     unlistenLyricsTimeOffset = await listen<RuntimeLyricsTimeOffset>('lyrics-time-offset-changed', (event) => {
       applyLyricsTimeOffset(event.payload);
     });
-    const [loadedSettings, runtimeOffset, fonts] = await Promise.all([
+    unlistenMediaState = await listen<MediaStatePayload>('media-state-changed', (event) => updateCurrentTrack(event.payload.track));
+    const [loadedSettings, runtimeOffset, fonts, mediaSnapshot] = await Promise.all([
       invoke<AppSettings>('get_settings'),
       invoke<RuntimeLyricsTimeOffset>('get_runtime_lyrics_time_offset'),
       invoke<string[]>('get_system_fonts'),
+      invoke<MediaSnapshotPayload>('get_media_snapshot'),
     ]);
     settings.value = loadedSettings;
     applyLyricsTimeOffset(runtimeOffset);
     applyLyricsTimeOffset(latestLyricsTimeOffset);
     systemFonts.value = fonts.length > 0 ? fonts : systemFonts.value;
+    updateCurrentTrack(mediaSnapshot.media.track);
     if (!systemFonts.value.includes(editor.value.fontFamily)) systemFonts.value.unshift(editor.value.fontFamily);
   } catch (error) { message.value = String(error); }
 });
 
-onUnmounted(() => unlistenLyricsTimeOffset?.());
+onUnmounted(() => { unlistenLyricsTimeOffset?.(); unlistenMediaState?.(); });
+
+function updateCurrentTrack(track: TrackIdentity) {
+  const changed = track.title !== currentTrack.value.title || track.artist !== currentTrack.value.artist || track.album !== currentTrack.value.album;
+  currentTrack.value = track;
+  if (!changed) return;
+  matchQuery.value = { title: track.title === '等待播放...' ? '' : track.title, artist: track.artist, album: track.album ?? '' };
+  matchCandidates.value = [];
+  selectedCandidate.value = null;
+  previewText.value = '';
+}
+
+function queryTrack(): TrackIdentity {
+  return { title: matchQuery.value.title.trim(), artist: matchQuery.value.artist.trim(), album: matchQuery.value.album.trim() || null };
+}
+
+function formatDuration(durationMs: number | null) {
+  if (durationMs === null) return '--:--';
+  const seconds = Math.round(durationMs / 1000);
+  return `${Math.floor(seconds / 60)}:${String(seconds % 60).padStart(2, '0')}`;
+}
+
+async function rescanLocalLyrics() {
+  matchBusy.value = true;
+  try {
+    const found = await invoke<boolean>('rescan_local_lyrics', { track: currentTrack.value });
+    await showMessage(found ? '本地缓存已刷新' : '本地缓存中没有找到当前歌曲歌词', { title: 'AMDL', kind: 'info' });
+  } catch (error) { await showMessage(String(error), { title: '扫描失败', kind: 'error' }); }
+  finally { matchBusy.value = false; }
+}
+
+async function refetchQqLyrics() {
+  matchBusy.value = true;
+  try {
+    const found = await invoke<boolean>('refetch_qq_lyrics', { track: currentTrack.value });
+    await showMessage(found ? 'Q音歌词已刷新' : 'Q音没有找到匹配歌词', { title: 'AMDL', kind: 'info' });
+  } catch (error) { await showMessage(String(error), { title: '获取失败', kind: 'error' }); }
+  finally { matchBusy.value = false; }
+}
+
+async function searchLyrics() {
+  matchBusy.value = true;
+  matchCandidates.value = [];
+  selectedCandidate.value = null;
+  previewText.value = '';
+  try {
+    matchCandidates.value = await invoke<QqSongCandidate[]>('search_qq_lyrics', { track: queryTrack() });
+    if (!matchCandidates.value.length) await showMessage('没有找到候选歌曲', { title: 'AMDL', kind: 'info' });
+  } catch (error) { await showMessage(String(error), { title: '搜索失败', kind: 'error' }); }
+  finally { matchBusy.value = false; }
+}
+
+async function selectCandidate(candidate: QqSongCandidate) {
+  selectedCandidate.value = candidate;
+  previewText.value = '';
+  matchBusy.value = true;
+  try {
+    const preview = await invoke<QqLyricsPreview>('preview_qq_lyrics', { candidate });
+    if (selectedCandidate.value?.songMid === candidate.songMid) previewText.value = preview.lyricsText;
+  } catch (error) { await showMessage(String(error), { title: '预览失败', kind: 'error' }); }
+  finally { matchBusy.value = false; }
+}
+
+async function applySelectedLyrics() {
+  if (!selectedCandidate.value) return;
+  matchBusy.value = true;
+  try {
+    await invoke('apply_custom_lyrics', { track: currentTrack.value, candidate: selectedCandidate.value });
+    await showMessage('歌词已应用并保存为永久匹配', { title: 'AMDL', kind: 'info' });
+  } catch (error) { await showMessage(String(error), { title: '应用失败', kind: 'error' }); }
+  finally { matchBusy.value = false; }
+}
 
 function syncCss() { settings.value.themeCss = buildThemeCss(editor.value); selectedPreset.value = 'custom'; }
 function syncCustomFont() { editor.value.fontFamily = customFontFamily.value || 'Microsoft YaHei UI'; syncCss(); }
@@ -166,6 +309,22 @@ async function exportTheme() {
   if (!path) return;
   try { await invoke('export_theme_file', { path, name: settings.value.themeName, css: settings.value.themeCss }); message.value = '主题已导出'; } catch (error) { message.value = String(error); }
 }
+async function refreshLog() {
+  try {
+    logText.value = await invoke<string>('read_current_log');
+    message.value = '';
+  } catch (error) {
+    message.value = String(error);
+  }
+}
+async function openLogDirectory() {
+  try {
+    await invoke('open_log_dir');
+    message.value = '';
+  } catch (error) {
+    message.value = String(error);
+  }
+}
 async function saveSettings() {
   settings.value.localCacheLimit = Math.max(1, Math.min(50, Math.round(settings.value.localCacheLimit || 10)));
   const rawLyricsTimeOffset: unknown = settings.value.lyricsTimeOffsetMs;
@@ -186,5 +345,7 @@ function closeWindow() { getCurrentWindow().hide(); }
 .appearance-workspace { min-height: 0; flex: 1; display: flex; flex-direction: column; }.appearance-toolbar { display: flex; align-items: end; gap: 14px; padding: 14px 0; border-bottom: 1px solid #dedee3; }.appearance-toolbar label { display: grid; gap: 5px; font-size: 11px; color: #777780; }.appearance-toolbar select { width: 150px; }.theme-name { width: 180px; }.file-actions { margin-left: auto; display: flex; gap: 6px; }.icon-command { height: 31px; display: flex; align-items: center; gap: 6px; border: 1px solid #ceced4; border-radius: 5px; padding: 0 10px; background: #fff; color: #55555e; cursor: pointer; }
 .appearance-grid { min-height: 0; flex: 1; display: grid; grid-template-columns: minmax(470px, 1.08fr) minmax(360px, .92fr); gap: 24px; padding-top: 14px; }.editor-pane { min-height: 0; overflow-y: auto; padding: 0 10px 8px 0; }.editor-section { padding: 0 0 16px; margin-bottom: 16px; border-bottom: 1px solid #dfdfe4; }.editor-section h2 { margin: 0 0 11px; font-size: 13px; color: #4d4d55; }.control-grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 10px 12px; }.control-grid label { min-width: 0; display: grid; gap: 5px; color: #7b7b84; font-size: 11px; }.control-grid label.wide { grid-column: span 2; }.control-grid input:not([type="checkbox"]):not([type="range"]), .control-grid select, .appearance-toolbar input, .appearance-toolbar select { box-sizing: border-box; width: 100%; height: 31px; border: 1px solid #cfcfd5; border-radius: 4px; padding: 0 7px; background: white; color: #33333a; }.control-grid input[type="color"] { padding: 3px; }.control-grid input[type="range"] { width: 100%; }.check-label { display: flex !important; align-items: center; gap: 7px !important; min-height: 31px; color: #55555e !important; }.check-label input { accent-color: #d13c86; }.range-value { color: #55555e; }.paint-controls { grid-template-columns: repeat(3, minmax(0, 1fr)); }
 .preview-pane { position: sticky; top: 0; align-self: start; min-height: 0; display: flex; flex-direction: column; }.preview-title, .source-header { height: 28px; display: flex; align-items: center; justify-content: space-between; color: #686871; font-size: 12px; font-weight: 650; }.theme-preview { position: relative; height: 176px; display: flex; align-items: center; overflow: hidden; background: #15151a; border: 1px solid #2e2e35; }.theme-preview::before { content: ''; position: absolute; inset: 0; background: linear-gradient(135deg, #23232b, #0d0d11 60%, #2b1823); }.theme-preview .amdl-lyrics { position: relative; width: 100%; padding: 20px; box-sizing: border-box; }.preview-progress { position: absolute; right: 0; bottom: 0; left: 0; height: 3px; background: #ffffff20; }.preview-progress > div { height: 100%; }.source-header { margin-top: 10px; }.text-command { border: 0; background: transparent; color: #bd2c76; cursor: pointer; }.css-editor { min-height: 110px; flex: 1; resize: none; border: 1px solid #cfcfd5; border-radius: 5px; padding: 10px; background: #fff; color: #33333a; font: 11px/1.5 Consolas, monospace; user-select: text; }
+.logs-workspace { min-height: 0; flex: 1; display: flex; flex-direction: column; padding-top: 14px; }.logs-toolbar { display: flex; gap: 8px; padding-bottom: 12px; }.log-viewer { min-height: 0; flex: 1; resize: none; box-sizing: border-box; width: 100%; border: 1px solid #cfcfd5; border-radius: 5px; padding: 12px; background: #fff; color: #33333a; font: 12px/1.55 Consolas, "Cascadia Mono", monospace; user-select: text; white-space: pre; }
+.match-workspace { min-height: 0; flex: 1; display: flex; flex-direction: column; padding-top: 14px; }.now-playing-strip { min-height: 62px; display: flex; align-items: center; justify-content: space-between; gap: 20px; padding-bottom: 12px; border-bottom: 1px solid #dedee3; }.track-summary { min-width: 0; display: grid; gap: 3px; }.track-summary strong, .track-summary span, .track-summary small { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }.track-summary strong { font-size: 15px; color: #33333a; }.track-summary span { font-size: 12px; color: #676770; }.track-summary small { font-size: 11px; color: #92929a; }.match-quick-actions { display: flex; flex: 0 0 auto; gap: 7px; }.icon-command:disabled, .button:disabled { opacity: .45; cursor: default; }.match-search-form { display: grid; grid-template-columns: 1fr 1fr 1fr auto; align-items: end; gap: 10px; padding: 12px 0; }.match-search-form label { min-width: 0; display: grid; gap: 5px; color: #777780; font-size: 11px; }.match-search-form input { width: 100%; height: 31px; box-sizing: border-box; border: 1px solid #cfcfd5; border-radius: 4px; padding: 0 8px; background: white; color: #33333a; }.search-button, .apply-lyrics-button { display: flex; align-items: center; justify-content: center; gap: 6px; }.search-button { height: 31px; }.match-grid { min-height: 0; flex: 1; display: grid; grid-template-columns: minmax(0, 1.1fr) minmax(0, .9fr); gap: 16px; }.match-results, .lyrics-preview-pane { min-height: 0; display: flex; flex-direction: column; border-top: 1px solid #d8d8dd; }.pane-heading { height: 34px; flex: 0 0 34px; display: flex; align-items: center; justify-content: space-between; color: #55555e; font-size: 12px; font-weight: 650; }.pane-heading small { min-width: 0; max-width: 70%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: #92929a; font-weight: 400; }.match-results { overflow-y: auto; }.candidate-row { min-height: 48px; display: grid; grid-template-columns: minmax(120px, 1.25fr) minmax(90px, .9fr) minmax(90px, 1fr) 42px; align-items: center; gap: 8px; border: 0; border-bottom: 1px solid #e1e1e5; padding: 6px 8px; background: transparent; color: #73737c; text-align: left; cursor: pointer; font-size: 11px; }.candidate-row:hover { background: #ececf0; }.candidate-row.selected { background: #fff; box-shadow: inset 3px 0 #d13c86; color: #4d4d55; }.candidate-row > span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }.candidate-title { color: #33333a; font-size: 12px; font-weight: 650; }.candidate-row time { text-align: right; color: #92929a; }.match-placeholder { flex: 1; display: grid; place-items: center; color: #96969e; font-size: 12px; }.lyrics-preview { min-height: 0; flex: 1; resize: none; box-sizing: border-box; width: 100%; border: 1px solid #cfcfd5; border-radius: 4px; padding: 10px; background: #fff; color: #33333a; font: 12px/1.6 "Microsoft YaHei UI", sans-serif; user-select: text; white-space: pre-wrap; }.apply-lyrics-button { min-height: 32px; margin-top: 9px; align-self: flex-end; }
 .number-input { width: 58px; padding: 7px 8px; border: 1px solid #cfcfd5; border-radius: 5px; text-align: center; }.offset-input { width: 108px; padding: 7px 8px; border: 1px solid #cfcfd5; border-radius: 5px; text-align: right; }.about-panel { flex: 1; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 10px; color: #55555e; }.about-logo { color: #d9428b; font-size: 35px; font-weight: 800; }.settings-footer { padding-top: 14px; display: flex; justify-content: space-between; align-items: center; }.save-message { color: #bf357c; font-size: 12px; }.footer-actions { display: flex; gap: 9px; }.button { min-width: 70px; height: 32px; border-radius: 5px; padding: 0 14px; font-size: 13px; cursor: pointer; }.button.secondary { border: 1px solid #d0d0d5; background: white; color: #5d5d65; }.button.primary { border: 0; background: #d13c86; color: white; }
 </style>

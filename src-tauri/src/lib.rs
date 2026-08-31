@@ -1,22 +1,42 @@
+macro_rules! println {
+    ($($arg:tt)*) => {{
+        ::std::println!($($arg)*);
+        crate::logger::write_line(::std::format_args!($($arg)*));
+    }};
+}
+
+macro_rules! eprintln {
+    ($($arg:tt)*) => {{
+        ::std::eprintln!($($arg)*);
+        crate::logger::write_line(::std::format_args!($($arg)*));
+    }};
+}
+
+pub mod app_paths;
 pub mod domain;
+pub mod logger;
 pub mod lyrics;
 pub mod media;
 
-use crate::domain::MediaStatePayload;
 use base64::Engine;
 use serde::{Deserialize, Serialize};
 use std::sync::atomic::{AtomicBool, AtomicI64, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
-use tauri::menu::{Menu, MenuItem, PredefinedMenuItem};
+use tauri::menu::{CheckMenuItem, Menu, MenuItem, PredefinedMenuItem};
 use tauri::tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent};
-use tauri::{AppHandle, Emitter, Listener, Manager, WebviewUrl, WebviewWindowBuilder};
+use tauri::{AppHandle, Emitter, Manager, State, WebviewUrl, WebviewWindowBuilder, Wry};
 
 static EXIT_REQUESTED: AtomicBool = AtomicBool::new(false);
 static SETTINGS_IO_LOCK: Mutex<()> = Mutex::new(());
 static LYRICS_OFFSET_UPDATE_LOCK: Mutex<()> = Mutex::new(());
 static LYRICS_TIME_OFFSET_MS: AtomicI64 = AtomicI64::new(0);
 static LYRICS_TIME_OFFSET_REVISION: AtomicU64 = AtomicU64::new(0);
+
+struct WindowLockState {
+    locked: AtomicBool,
+    menu_item: CheckMenuItem<Wry>,
+}
 
 const DEFAULT_THEME_NAME: &str = "AMDL 默认";
 const DEFAULT_WINDOW_WIDTH: u32 = 800;
@@ -92,13 +112,7 @@ impl Default for AppSettings {
 }
 
 fn settings_path() -> Result<std::path::PathBuf, String> {
-    std::env::var_os("LOCALAPPDATA")
-        .map(|path| {
-            std::path::PathBuf::from(path)
-                .join("AM-Desktop-Lyrics")
-                .join("settings.json")
-        })
-        .ok_or_else(|| "LOCALAPPDATA 不可用".to_string())
+    app_paths::settings_file()
 }
 
 fn read_settings_unlocked() -> Result<AppSettings, String> {
@@ -327,10 +341,91 @@ fn open_settings(app: AppHandle) -> Result<(), String> {
     window.set_focus().map_err(|error| error.to_string())
 }
 
+fn position_unlock_window(app: &AppHandle) -> Result<(), String> {
+    let main = app
+        .get_webview_window("main")
+        .ok_or_else(|| "找不到歌词主窗口".to_string())?;
+    let unlock = app
+        .get_webview_window("unlock")
+        .ok_or_else(|| "找不到解锁窗口".to_string())?;
+    let main_position = main.outer_position().map_err(|error| error.to_string())?;
+    let main_size = main.outer_size().map_err(|error| error.to_string())?;
+    let unlock_size = unlock.outer_size().map_err(|error| error.to_string())?;
+    let x = main_position.x + (main_size.width as i32 - unlock_size.width as i32) / 2;
+    unlock
+        .set_position(tauri::Position::Physical(tauri::PhysicalPosition::new(
+            x,
+            main_position.y,
+        )))
+        .map_err(|error| format!("定位解锁窗口失败: {error}"))
+}
+
+fn apply_window_lock(
+    app: &AppHandle,
+    state: &WindowLockState,
+    locked: bool,
+) -> Result<bool, String> {
+    let main = app
+        .get_webview_window("main")
+        .ok_or_else(|| "找不到歌词主窗口".to_string())?;
+    let unlock = app
+        .get_webview_window("unlock")
+        .ok_or_else(|| "找不到解锁窗口".to_string())?;
+
+    if locked {
+        position_unlock_window(app)?;
+        main.set_ignore_cursor_events(true)
+            .map_err(|error| format!("启用鼠标穿透失败: {error}"))?;
+        if let Err(error) = unlock.show() {
+            let _ = main.set_ignore_cursor_events(false);
+            return Err(format!("显示解锁窗口失败: {error}"));
+        }
+    } else {
+        unlock
+            .hide()
+            .map_err(|error| format!("隐藏解锁窗口失败: {error}"))?;
+        main.set_ignore_cursor_events(false)
+            .map_err(|error| format!("关闭鼠标穿透失败: {error}"))?;
+    }
+
+    state.locked.store(locked, Ordering::SeqCst);
+    state
+        .menu_item
+        .set_checked(locked)
+        .map_err(|error| format!("同步托盘锁定状态失败: {error}"))?;
+    app.emit("lock-state-changed", locked)
+        .map_err(|error| format!("广播锁定状态失败: {error}"))?;
+    println!("[AMDL][窗口] 锁定状态已更新: locked={locked}");
+    Ok(locked)
+}
+
+#[tauri::command]
+fn get_lock_state(state: State<'_, WindowLockState>) -> bool {
+    state.locked.load(Ordering::SeqCst)
+}
+
+#[tauri::command]
+fn set_window_locked(
+    app: AppHandle,
+    state: State<'_, WindowLockState>,
+    locked: bool,
+) -> Result<bool, String> {
+    apply_window_lock(&app, &state, locked)
+}
+
 fn show_main_window(app: &AppHandle) {
     if let Some(window) = app.get_webview_window("main") {
         let _ = window.show();
         let _ = window.set_focus();
+    }
+    if app
+        .try_state::<WindowLockState>()
+        .is_some_and(|state| state.locked.load(Ordering::SeqCst))
+    {
+        let _ = position_unlock_window(app);
+        if let Some(window) = app.get_webview_window("unlock") {
+            let _ = window.show();
+        }
     }
 }
 
@@ -462,37 +557,14 @@ fn resume_window_bounds_saving(suspended: Arc<AtomicBool>) {
     });
 }
 
-fn reset_window_bounds(
-    app: &AppHandle,
-    suspended: Arc<AtomicBool>,
-    generation: Arc<AtomicU64>,
-) -> Result<(), String> {
-    suspended.store(true, Ordering::SeqCst);
-    generation.fetch_add(1, Ordering::SeqCst);
-    let settings = {
-        let _guard = SETTINGS_IO_LOCK
-            .lock()
-            .map_err(|_| "设置文件锁已损坏".to_string())?;
-        let mut settings = read_settings_unlocked().unwrap_or_default();
-        settings.lyrics_window_bounds = None;
-        write_settings_unlocked(&settings)?;
-        settings
-    };
-    if let Some(window) = app.get_webview_window("main") {
-        apply_window_bounds(&window, default_window_bounds(&window));
-    }
-    app.emit("settings-changed", &settings)
-        .map_err(|error| format!("广播设置失败: {error}"))?;
-    resume_window_bounds_saving(suspended);
-    Ok(())
-}
-
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_dialog::init())
         .setup(|app| {
+            logger::initialize(app.handle())?;
+            println!("[AMDL][启动] 日志系统已初始化");
             // 在应用启动时创建并启动 SMTC 管理器，
             // 它会在独立线程中监听系统媒体控制事件
             let handle = app.handle().clone();
@@ -502,29 +574,22 @@ pub fn run() {
             let bounds_save_suspended = Arc::new(AtomicBool::new(true));
             let bounds_save_generation = Arc::new(AtomicU64::new(0));
 
-            let title_item =
-                MenuItem::with_id(app, "current-title", "未在播放", false, None::<&str>)?;
-            let artist_item = MenuItem::with_id(app, "current-artist", "", false, None::<&str>)?;
+            let lock_item =
+                CheckMenuItem::with_id(app, "lock", "锁定窗口", true, false, None::<&str>)?;
+            app.manage(WindowLockState {
+                locked: AtomicBool::new(false),
+                menu_item: lock_item.clone(),
+            });
+            let show_main_interface_item =
+                MenuItem::with_id(app, "show-main-interface", "显示主界面", true, None::<&str>)?;
+            let quit_item = MenuItem::with_id(app, "quit", "退出 AMDL", true, None::<&str>)?;
             let menu = Menu::with_items(
                 app,
                 &[
-                    &title_item,
-                    &artist_item,
+                    &lock_item,
+                    &show_main_interface_item,
                     &PredefinedMenuItem::separator(app)?,
-                    &MenuItem::with_id(app, "prev", "上一曲", true, None::<&str>)?,
-                    &MenuItem::with_id(app, "play-pause", "播放/暂停", true, None::<&str>)?,
-                    &MenuItem::with_id(app, "next", "下一曲", true, None::<&str>)?,
-                    &MenuItem::with_id(app, "lock", "锁定窗口", true, None::<&str>)?,
-                    &MenuItem::with_id(
-                        app,
-                        "reset-window-bounds",
-                        "重置位置和大小",
-                        true,
-                        None::<&str>,
-                    )?,
-                    &MenuItem::with_id(app, "settings", "设置", true, None::<&str>)?,
-                    &PredefinedMenuItem::separator(app)?,
-                    &MenuItem::with_id(app, "quit", "退出软件", true, None::<&str>)?,
+                    &quit_item,
                 ],
             )?;
             let tray_app = app.handle().clone();
@@ -547,42 +612,26 @@ pub fn run() {
                 })
                 .build(app)?;
 
-            let title_item_for_media = title_item.clone();
-            let artist_item_for_media = artist_item.clone();
-            app.listen("media-state-changed", move |event| {
-                if let Ok(payload) = serde_json::from_str::<MediaStatePayload>(event.payload()) {
-                    let _ = title_item_for_media.set_text(payload.track.title);
-                    let _ = artist_item_for_media.set_text(payload.track.artist);
-                }
-            });
-
             let menu_app = app.handle().clone();
-            let menu_bounds_save_suspended = bounds_save_suspended.clone();
-            let menu_bounds_save_generation = bounds_save_generation.clone();
+            let menu_lock_item = lock_item.clone();
             app.on_menu_event(move |_app, event| match event.id().as_ref() {
-                "prev" => {
-                    let _ = media::smtc::prev_track();
-                }
-                "play-pause" => {
-                    let _ = media::smtc::play_pause();
-                }
-                "next" => {
-                    let _ = media::smtc::next_track();
-                }
-                "settings" => {
-                    let _ = open_settings(menu_app.clone());
-                }
                 "lock" => {
-                    let _ = menu_app.emit("tray-toggle-lock", ());
+                    let checked = menu_lock_item.is_checked().unwrap_or(false);
+                    let state = menu_app.state::<WindowLockState>();
+                    if let Err(error) = apply_window_lock(&menu_app, &state, checked) {
+                        let previous = state.locked.load(Ordering::SeqCst);
+                        let _ = menu_lock_item.set_checked(previous);
+                        eprintln!("[AMDL][托盘] 切换窗口锁定失败: {error}");
+                    }
                 }
-                "reset-window-bounds" => {
-                    let _ = reset_window_bounds(
-                        &menu_app,
-                        menu_bounds_save_suspended.clone(),
-                        menu_bounds_save_generation.clone(),
-                    );
+                "show-main-interface" => {
+                    println!("[AMDL][托盘] 显示主界面");
+                    if let Err(error) = open_settings(menu_app.clone()) {
+                        eprintln!("[AMDL][托盘] 显示主界面失败: {error}");
+                    }
                 }
                 "quit" => {
+                    println!("[AMDL][托盘] 退出 AMDL");
                     EXIT_REQUESTED.store(true, Ordering::SeqCst);
                     menu_app.exit(0);
                 }
@@ -606,6 +655,11 @@ pub fn run() {
                         if !EXIT_REQUESTED.load(Ordering::SeqCst) {
                             api.prevent_close();
                             let _ = bounded_window.hide();
+                            if let Some(unlock) =
+                                bounded_window.app_handle().get_webview_window("unlock")
+                            {
+                                let _ = unlock.hide();
+                            }
                         }
                         return;
                     }
@@ -657,6 +711,7 @@ pub fn run() {
                         ));
                         return;
                     }
+                    let _ = position_unlock_window(bounded_window.app_handle());
                     if !event_save_suspended.load(Ordering::SeqCst) {
                         schedule_window_bounds_save(
                             LyricsWindowBounds {
@@ -675,6 +730,9 @@ pub fn run() {
             if let Some(window) = app.get_webview_window("settings") {
                 keep_settings_window_reusable(&window);
             }
+            if let Some(window) = app.get_webview_window("unlock") {
+                let _ = window.hide();
+            }
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
@@ -691,6 +749,15 @@ pub fn run() {
             export_theme_file,
             open_settings,
             get_system_fonts,
+            get_lock_state,
+            set_window_locked,
+            logger::read_current_log,
+            logger::open_log_dir,
+            lyrics::provider::search_qq_lyrics,
+            lyrics::provider::preview_qq_lyrics,
+            lyrics::provider::rescan_local_lyrics,
+            lyrics::provider::refetch_qq_lyrics,
+            lyrics::provider::apply_custom_lyrics,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

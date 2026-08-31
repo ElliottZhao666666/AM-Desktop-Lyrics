@@ -97,11 +97,7 @@ fn convert_to_simplified(mut document: LyricsDocument) -> LyricsDocument {
 }
 
 fn auto_convert_traditional_to_simplified() -> bool {
-    let Some(path) = std::env::var_os("LOCALAPPDATA").map(|value| {
-        std::path::PathBuf::from(value)
-            .join("AM-Desktop-Lyrics")
-            .join("settings.json")
-    }) else {
+    let Ok(path) = crate::app_paths::settings_file() else {
         return DEFAULT_AUTO_CONVERT_TRADITIONAL_TO_SIMPLIFIED;
     };
     let Ok(encoded) = std::fs::read_to_string(path) else {

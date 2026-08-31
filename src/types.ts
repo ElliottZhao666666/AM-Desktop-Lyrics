@@ -77,3 +77,15 @@ export interface ThemeFile {
   name: string;
   css: string;
 }
+
+export interface QqSongCandidate {
+  songId: number;
+  songMid: string;
+  track: TrackIdentity;
+  durationMs: number | null;
+}
+
+export interface QqLyricsPreview {
+  candidate: QqSongCandidate;
+  lyricsText: string;
+}

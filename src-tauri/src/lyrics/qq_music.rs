@@ -4,7 +4,7 @@ use std::time::Duration;
 use base64::engine::general_purpose::STANDARD as BASE64;
 use base64::Engine;
 use reqwest::Client;
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 
 use crate::domain::{LyricLine, LyricsDocument, LyricsSource, TrackIdentity};
@@ -12,17 +12,49 @@ use crate::domain::{LyricLine, LyricsDocument, LyricsSource, TrackIdentity};
 const API_URL: &str = "https://u.y.qq.com/cgi-bin/musicu.fcg";
 const LEGACY_LYRIC_URL: &str = "https://c.y.qq.com/lyric/fcgi-bin/fcg_query_lyric_new.fcg";
 
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct QqSongCandidate {
+    pub song_id: u64,
+    pub song_mid: String,
+    pub track: TrackIdentity,
+    pub duration_ms: Option<u64>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct QqLyricsPreview {
+    pub candidate: QqSongCandidate,
+    pub lyrics_text: String,
+}
+
 pub async fn fetch_lyrics(
     track: &TrackIdentity,
 ) -> Result<Option<LyricsDocument>, Box<dyn Error + Send + Sync>> {
     println!("[QQ] 开始获取歌词: track={track:?}");
-    let client = Client::builder()
-        .connect_timeout(Duration::from_secs(12))
-        .timeout(Duration::from_secs(30))
-        .http1_only()
-        .user_agent("AM-Desktop-Lyrics/0.1")
-        .build()?;
-    println!("[QQ] HTTP 客户端已创建: http1_only=true, connect_timeout=12s, timeout=30s");
+    let candidates = search_songs(track).await?;
+    let selected = candidates
+        .iter()
+        .find(|candidate| candidate_matches(candidate, track))
+        .or_else(|| candidates.first());
+    let Some(selected) = selected else {
+        return Ok(None);
+    };
+    println!(
+        "[QQ] 自动选中候选: title={:?}, artist={:?}, mid={:?}, id={}, matched={}",
+        selected.track.title,
+        selected.track.artist,
+        selected.song_mid,
+        selected.song_id,
+        candidate_matches(selected, track)
+    );
+    fetch_lyrics_by_song(track, selected).await
+}
+
+pub async fn search_songs(
+    track: &TrackIdentity,
+) -> Result<Vec<QqSongCandidate>, Box<dyn Error + Send + Sync>> {
+    let client = create_client()?;
     let qq_artist = qq_artist_query(&track.artist);
     let search_query = if qq_artist.is_empty() {
         track.title.clone()
@@ -58,9 +90,10 @@ pub async fn fetch_lyrics(
         .and_then(Value::as_array);
     let Some(songs) = songs else {
         println!("[QQ] 搜索响应中没有歌曲列表");
-        return Ok(None);
+        return Ok(Vec::new());
     };
     println!("[QQ] 搜索返回 {} 个候选", songs.len());
+    let mut candidates = Vec::new();
     for (index, song) in songs.iter().enumerate() {
         let title = song.get("name").and_then(Value::as_str).unwrap_or_default();
         let artists = song
@@ -85,28 +118,59 @@ pub async fn fetch_lyrics(
             normalize(&artists),
             song_matches(song, track)
         );
+        if let Some(candidate) = parse_candidate(song) {
+            candidates.push(candidate);
+        }
     }
-    let Some((selected_index, song)) = songs
-        .iter()
-        .enumerate()
-        .find(|(_, song)| candidate_has_identity(song))
-    else {
-        println!("[QQ] 搜索候选均缺少歌词请求所需的 mid 或 id");
+    Ok(candidates)
+}
+
+pub async fn preview_lyrics(
+    candidate: QqSongCandidate,
+) -> Result<Option<QqLyricsPreview>, Box<dyn Error + Send + Sync>> {
+    let client = create_client()?;
+    let lyrics_text = fetch_lyric_text(&client, &candidate).await?;
+    if parse_lrc(&lyrics_text).is_empty() {
         return Ok(None);
-    };
-    let Some(song_mid) = song.get("mid").and_then(Value::as_str) else {
-        println!("[QQ] 匹配候选缺少 mid");
+    }
+    Ok(Some(QqLyricsPreview {
+        candidate,
+        lyrics_text: plain_lyrics(&lyrics_text),
+    }))
+}
+
+pub async fn fetch_lyrics_by_song(
+    track: &TrackIdentity,
+    candidate: &QqSongCandidate,
+) -> Result<Option<LyricsDocument>, Box<dyn Error + Send + Sync>> {
+    let client = create_client()?;
+    let lyric = fetch_lyric_text(&client, candidate).await?;
+    println!("[QQ] 歌词文本已取得: utf8_length={}", lyric.len());
+    let lines = parse_lrc(&lyric);
+    if lines.is_empty() {
+        println!("[QQ] LRC 解析完成但没有有效时间轴歌词行");
         return Ok(None);
-    };
-    let Some(song_id) = song.get("id").and_then(Value::as_u64) else {
-        println!("[QQ] 匹配候选缺少 id");
-        return Ok(None);
-    };
+    }
     println!(
-        "[QQ] 按搜索结果顺序选中候选 #{}: mid={song_mid:?}, id={song_id}, diagnostic_matched={}",
-        selected_index + 1,
-        song_matches(song, track)
+        "[QQ] LRC 解析成功: lines={}, first_begin_ms={}, last_begin_ms={}",
+        lines.len(),
+        lines.first().map(|line| line.begin_ms).unwrap_or_default(),
+        lines.last().map(|line| line.begin_ms).unwrap_or_default()
     );
+    Ok(Some(LyricsDocument {
+        track: track.clone(),
+        source: LyricsSource::QqMusic,
+        duration_ms: candidate.duration_ms,
+        lines,
+    }))
+}
+
+async fn fetch_lyric_text(
+    client: &Client,
+    candidate: &QqSongCandidate,
+) -> Result<String, Box<dyn Error + Send + Sync>> {
+    let song_mid = &candidate.song_mid;
+    let song_id = candidate.song_id;
 
     let lyric_body = json!({
         "comm": { "ct": "19", "cv": "1859", "uin": "0" },
@@ -144,24 +208,66 @@ pub async fn fetch_lyrics(
             fetch_legacy_lyric(&client, song_mid).await?
         }
     };
-    println!("[QQ] 歌词文本已取得: utf8_length={}", lyric.len());
-    let lines = parse_lrc(&lyric);
-    if lines.is_empty() {
-        println!("[QQ] LRC 解析完成但没有有效时间轴歌词行");
-        return Ok(None);
+    Ok(lyric)
+}
+
+fn create_client() -> Result<Client, Box<dyn Error + Send + Sync>> {
+    let client = Client::builder()
+        .connect_timeout(Duration::from_secs(12))
+        .timeout(Duration::from_secs(30))
+        .http1_only()
+        .user_agent("AMDL/1.0.0")
+        .build()?;
+    println!("[QQ] HTTP 客户端已创建: http1_only=true, connect_timeout=12s, timeout=30s");
+    Ok(client)
+}
+
+fn parse_candidate(song: &Value) -> Option<QqSongCandidate> {
+    if !candidate_has_identity(song) {
+        return None;
     }
-    println!(
-        "[QQ] LRC 解析成功: lines={}, first_begin_ms={}, last_begin_ms={}",
-        lines.len(),
-        lines.first().map(|line| line.begin_ms).unwrap_or_default(),
-        lines.last().map(|line| line.begin_ms).unwrap_or_default()
-    );
-    Ok(Some(LyricsDocument {
-        track: track.clone(),
-        source: LyricsSource::QqMusic,
-        duration_ms: None,
-        lines,
-    }))
+    let artists = song
+        .get("singer")
+        .and_then(Value::as_array)
+        .map(|singers| {
+            singers
+                .iter()
+                .filter_map(|singer| singer.get("name").and_then(Value::as_str))
+                .collect::<Vec<_>>()
+                .join(" / ")
+        })
+        .unwrap_or_default();
+    Some(QqSongCandidate {
+        song_id: song.get("id")?.as_u64()?,
+        song_mid: song.get("mid")?.as_str()?.to_string(),
+        track: TrackIdentity {
+            title: song.get("name")?.as_str()?.to_string(),
+            artist: artists,
+            album: song
+                .pointer("/album/name")
+                .and_then(Value::as_str)
+                .filter(|value| !value.is_empty())
+                .map(str::to_string),
+        },
+        duration_ms: song
+            .get("interval")
+            .and_then(Value::as_u64)
+            .map(|seconds| seconds.saturating_mul(1000)),
+    })
+}
+
+fn candidate_matches(candidate: &QqSongCandidate, track: &TrackIdentity) -> bool {
+    normalize(&candidate.track.title) == normalize(&track.title)
+        && normalize(&candidate.track.artist).contains(&normalize(&track.artist))
+}
+
+fn plain_lyrics(value: &str) -> String {
+    value
+        .lines()
+        .filter_map(|line| line.rsplit_once(']').map(|(_, text)| text.trim()))
+        .filter(|line| !line.is_empty())
+        .collect::<Vec<_>>()
+        .join("\n")
 }
 
 fn ensure_api_success(
@@ -328,8 +434,9 @@ fn parse_lrc(value: &str) -> Vec<LyricLine> {
 
 #[cfg(test)]
 mod tests {
-    use super::{fetch_lyrics, parse_lrc, qq_artist_query};
+    use super::{fetch_lyrics, parse_candidate, parse_lrc, plain_lyrics, qq_artist_query};
     use crate::domain::{LyricsSource, TrackIdentity};
+    use serde_json::json;
 
     #[test]
     fn parses_lrc_timestamps() {
@@ -343,6 +450,34 @@ mod tests {
         assert_eq!(
             qq_artist_query("歌手甲 , 歌手乙＆歌手丙"),
             "歌手甲;歌手乙;歌手丙"
+        );
+    }
+
+    #[test]
+    fn parses_search_candidate_metadata() {
+        let candidate = parse_candidate(&json!({
+            "id": 123,
+            "mid": "mid123",
+            "name": "测试歌曲",
+            "singer": [{ "name": "歌手甲" }, { "name": "歌手乙" }],
+            "album": { "name": "测试专辑" },
+            "interval": 245
+        }))
+        .expect("parse candidate");
+
+        assert_eq!(candidate.song_id, 123);
+        assert_eq!(candidate.song_mid, "mid123");
+        assert_eq!(candidate.track.title, "测试歌曲");
+        assert_eq!(candidate.track.artist, "歌手甲 / 歌手乙");
+        assert_eq!(candidate.track.album.as_deref(), Some("测试专辑"));
+        assert_eq!(candidate.duration_ms, Some(245_000));
+    }
+
+    #[test]
+    fn extracts_plain_lyrics_without_timestamps() {
+        assert_eq!(
+            plain_lyrics("[00:01.00]第一行\n[00:03.50] 第二行\n[ar:歌手]\n"),
+            "第一行\n第二行"
         );
     }
 

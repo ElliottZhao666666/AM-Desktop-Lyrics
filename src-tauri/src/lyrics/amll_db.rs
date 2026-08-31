@@ -26,7 +26,7 @@ fn client() -> &'static Client {
         Client::builder()
             .connect_timeout(Duration::from_secs(5))
             .http1_only()
-            .user_agent("AM-Desktop-Lyrics/0.1")
+            .user_agent("AMDL/1.0.0")
             .build()
             .expect("valid HTTP client")
     })
@@ -352,8 +352,7 @@ fn is_safe_ttml_file(path: &str) -> bool {
 }
 
 fn cache_dir() -> Result<PathBuf, Box<dyn Error + Send + Sync>> {
-    let root = std::env::var_os("LOCALAPPDATA").ok_or("LOCALAPPDATA is unavailable")?;
-    Ok(PathBuf::from(root).join("AM-Desktop-Lyrics").join("lyrics"))
+    crate::app_paths::lyrics_dir().map_err(Into::into)
 }
 
 #[cfg(test)]

@@ -94,12 +94,36 @@ fn find_apple_music_session(
 fn waiting_state() -> MediaStatePayload {
     MediaStatePayload {
         track: TrackIdentity {
-            title: "等待 Apple Music 播放...".to_string(),
+            title: "等待播放...".to_string(),
             artist: String::new(),
             album: None,
         },
         playback_state: PlaybackState::Stopped,
     }
+}
+
+fn is_unavailable_track(track: &TrackIdentity) -> bool {
+    track.title.trim().is_empty()
+        || track.artist.trim().is_empty()
+        || track.title.contains("正在连接")
+}
+
+fn normalize_playable_state(payload: MediaStatePayload) -> MediaStatePayload {
+    if is_unavailable_track(&payload.track) {
+        waiting_state()
+    } else {
+        payload
+    }
+}
+
+fn emit_state_and_fetch_lyrics(app_handle: &tauri::AppHandle, payload: MediaStatePayload) {
+    let payload = normalize_playable_state(payload);
+    emit_media_state(app_handle, &payload);
+    if is_unavailable_track(&payload.track) || payload.track.title == "等待播放..." {
+        crate::lyrics::provider::enter_waiting_state();
+        return;
+    }
+    crate::lyrics::provider::fetch_and_emit_lyrics(payload.track, app_handle.clone());
 }
 
 fn store_media_state(payload: &MediaStatePayload) {
@@ -338,13 +362,7 @@ fn smtc_main_loop(app_handle: Arc<tauri::AppHandle>) {
                                                 payload.track.artist,
                                                 payload.playback_state
                                             );
-                                            emit_media_state(&handle_for_props, &payload);
-
-                                            // 触发歌词搜索联动
-                                            crate::lyrics::provider::fetch_and_emit_lyrics(
-                                                payload.track.clone(),
-                                                (*handle_for_props).clone(),
-                                            );
+                                            emit_state_and_fetch_lyrics(&handle_for_props, payload);
                                         }
                                         Err(e) => eprintln!("[SMTC] 读取媒体属性失败: {:?}", e),
                                     }
@@ -367,7 +385,11 @@ fn smtc_main_loop(app_handle: Arc<tauri::AppHandle>) {
                                             "[SMTC] 播放状态变化: {:?}",
                                             payload.playback_state
                                         );
+                                        let payload = normalize_playable_state(payload);
                                         emit_media_state(&handle_for_playback, &payload);
+                                        if is_unavailable_track(&payload.track) {
+                                            crate::lyrics::provider::enter_waiting_state();
+                                        }
                                     }
                                 }
                                 Ok(())
@@ -397,11 +419,7 @@ fn smtc_main_loop(app_handle: Arc<tauri::AppHandle>) {
 
                         // 初始触发一次状态发送和歌词检索
                         if let Ok(payload) = read_media_state(&session) {
-                            emit_media_state(&app_handle, &payload);
-                            crate::lyrics::provider::fetch_and_emit_lyrics(
-                                payload.track.clone(),
-                                (*app_handle).clone(),
-                            );
+                            emit_state_and_fetch_lyrics(&app_handle, payload);
                         }
 
                         current_session = Some(session);
@@ -413,6 +431,7 @@ fn smtc_main_loop(app_handle: Arc<tauri::AppHandle>) {
                         // 未找到，发送等待状态并休眠 1000ms
                         let payload = waiting_state();
                         emit_media_state(&app_handle, &payload);
+                        crate::lyrics::provider::enter_waiting_state();
                         store_media_position(&MediaPositionPayload {
                             position_ms: 0,
                             duration_ms: 0,
@@ -498,6 +517,7 @@ fn smtc_main_loop(app_handle: Arc<tauri::AppHandle>) {
                     clear_current_session();
                     let waiting = waiting_state();
                     emit_media_state(&app_handle, &waiting);
+                    crate::lyrics::provider::enter_waiting_state();
                     let empty_position = MediaPositionPayload {
                         position_ms: 0,
                         duration_ms: 0,
@@ -612,7 +632,19 @@ pub fn prev_track() -> Result<(), String> {
 
 #[cfg(test)]
 mod tests {
-    use super::{clean_artist, parse_apple_music_metadata};
+    use super::{clean_artist, is_unavailable_track, parse_apple_music_metadata};
+
+    #[test]
+    fn rejects_empty_and_connecting_metadata() {
+        assert!(is_unavailable_track(
+            &crate::domain::TrackIdentity::default()
+        ));
+        assert!(is_unavailable_track(&crate::domain::TrackIdentity {
+            title: "正在连接 Apple Music".into(),
+            artist: "Apple Music".into(),
+            album: None,
+        }));
+    }
 
     #[test]
     fn separates_artist_and_album_when_album_property_is_missing() {

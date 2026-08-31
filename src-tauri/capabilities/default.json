@@ -2,7 +2,7 @@
   "$schema": "../gen/schemas/desktop-schema.json",
   "identifier": "default",
   "description": "Capability for the main window",
-  "windows": ["main", "settings"],
+  "windows": ["main", "settings", "unlock"],
   "permissions": [
     "core:default",
     "core:window:allow-close",
@@ -14,6 +14,7 @@
     "core:window:allow-start-resize-dragging",
     "dialog:allow-open",
     "dialog:allow-save",
+    "dialog:allow-message",
     "opener:default"
   ]
 }

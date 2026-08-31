@@ -1,8 +1,9 @@
 <template>
   <SettingsView v-if="isSettingsWindow" />
+  <UnlockButton v-else-if="isUnlockWindow" />
   <div v-else
     class="lyrics-window w-screen h-screen relative overflow-hidden"
-    :class="{ 'is-interactive': isHovering }"
+    :class="{ 'is-interactive': isHovering && !controlsLocked }"
     @mouseenter="isHovering = true"
     @mouseleave="isHovering = false"
     @contextmenu.prevent
@@ -10,21 +11,21 @@
     <template v-if="isHovering && !controlsLocked">
       <div v-for="edge in resizeEdges" :key="edge.direction" class="resize-edge" :class="edge.className" @mousedown.stop.prevent="startResize(edge.direction)" />
     </template>
-    <ControlBar 
-      :show="isHovering" 
+    <ControlBar
+      v-if="!controlsLocked"
+      :show="isHovering"
       :title="mediaTitle" 
       :artist="mediaArtist"
       :is-playing="isPlaying"
       :position-ms="displayPositionMs"
       :duration-ms="durationMs"
-      :locked="controlsLocked"
       @prev="onPrev"
       @playPause="onPlayPause"
       @next="onNext"
       @lyricsEarlier="adjustLyricsOffset(-500)"
       @lyricsLater="adjustLyricsOffset(500)"
       @settings="onSettings"
-      @toggleLock="controlsLocked = !controlsLocked"
+      @toggleLock="setWindowLocked(true)"
       @close="onHide"
     />
     <LyricsBoard 
@@ -47,6 +48,7 @@ import { getCurrentWindow } from '@tauri-apps/api/window';
 import ControlBar from './components/ControlBar.vue';
 import LyricsBoard from './components/LyricsBoard.vue';
 import SettingsView from './components/SettingsView.vue';
+import UnlockButton from './components/UnlockButton.vue';
 import type {
   AppSettings,
   LyricsDocument,
@@ -58,7 +60,9 @@ import type {
   RuntimeLyricsTimeOffset,
 } from './types';
 
-const isSettingsWindow = getCurrentWindow().label === 'settings';
+const currentWindowLabel = getCurrentWindow().label;
+const isSettingsWindow = currentWindowLabel === 'settings';
+const isUnlockWindow = currentWindowLabel === 'unlock';
 
 // ==========================================
 // 响应式状态
@@ -82,7 +86,7 @@ let unlistenMediaPosition: UnlistenFn | null = null;
 let unlistenLyricsLoaded: UnlistenFn | null = null;
 let unlistenLyricsStatus: UnlistenFn | null = null;
 let animationFrameId: number | null = null;
-let unlistenTrayLock: UnlistenFn | null = null;
+let unlistenLockState: UnlistenFn | null = null;
 let unlistenSettings: UnlistenFn | null = null;
 let unlistenLyricsTimeOffset: UnlistenFn | null = null;
 let clockAnchorPositionMs = 0;
@@ -176,7 +180,17 @@ function applyMediaState(payload: MediaStatePayload) {
 // 生命周期
 // ==========================================
 onMounted(async () => {
-  if (isSettingsWindow) return;
+  if (isSettingsWindow || isUnlockWindow) return;
+
+  unlistenLockState = await listen<boolean>('lock-state-changed', (event) => {
+    controlsLocked.value = event.payload;
+    if (event.payload) isHovering.value = false;
+  });
+  try {
+    controlsLocked.value = await invoke<boolean>('get_lock_state');
+  } catch (error) {
+    console.error('get_lock_state failed:', error);
+  }
 
   unlistenLyricsTimeOffset = await listen<RuntimeLyricsTimeOffset>('lyrics-time-offset-changed', (event) => {
     applyLyricsTimeOffset(event.payload);
@@ -212,10 +226,6 @@ onMounted(async () => {
     lyricsState.value = event.payload.state;
     lyricsMessage.value = event.payload.message;
   });
-  unlistenTrayLock = await listen('tray-toggle-lock', () => {
-    controlsLocked.value = !controlsLocked.value;
-  });
-
   // 监听全部就绪后主动读取一次快照，补回 WebView 挂载前可能错过的事件。
   try {
     const snapshot = await invoke<MediaSnapshotPayload>('get_media_snapshot');
@@ -233,7 +243,7 @@ onUnmounted(() => {
   unlistenMediaPosition?.();
   unlistenLyricsLoaded?.();
   unlistenLyricsStatus?.();
-  unlistenTrayLock?.();
+  unlistenLockState?.();
   unlistenSettings?.();
   unlistenLyricsTimeOffset?.();
   if (animationFrameId !== null) cancelAnimationFrame(animationFrameId);
@@ -256,6 +266,14 @@ async function adjustLyricsOffset(deltaMs: number) {
     applyLyricsTimeOffset(await invoke<RuntimeLyricsTimeOffset>('adjust_runtime_lyrics_time_offset', { deltaMs }));
   } catch (error) {
     console.error('adjust_runtime_lyrics_time_offset failed:', error);
+  }
+}
+
+async function setWindowLocked(locked: boolean) {
+  try {
+    controlsLocked.value = await invoke<boolean>('set_window_locked', { locked });
+  } catch (error) {
+    console.error('set_window_locked failed:', error);
   }
 }
 

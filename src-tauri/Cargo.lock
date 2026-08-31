@@ -33,6 +33,25 @@ dependencies = [
 ]
 
 [[package]]
+name = "amdl"
+version = "1.0.0"
+dependencies = [
+ "base64 0.22.1",
+ "ferrous-opencc",
+ "quick-xml 0.38.4",
+ "reqwest 0.12.28",
+ "serde",
+ "serde_json",
+ "tauri",
+ "tauri-build",
+ "tauri-plugin-dialog",
+ "tauri-plugin-opener",
+ "tokio",
+ "windows",
+ "winreg 0.56.0",
+]
+
+[[package]]
 name = "android_system_properties"
 version = "0.1.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3689,25 +3708,6 @@ dependencies = [
  "webview2-com",
  "window-vibrancy",
  "windows",
-]
-
-[[package]]
-name = "tauri-app"
-version = "0.1.0"
-dependencies = [
- "base64 0.22.1",
- "ferrous-opencc",
- "quick-xml 0.38.4",
- "reqwest 0.12.28",
- "serde",
- "serde_json",
- "tauri",
- "tauri-build",
- "tauri-plugin-dialog",
- "tauri-plugin-opener",
- "tokio",
- "windows",
- "winreg 0.56.0",
 ]
 
 [[package]]
