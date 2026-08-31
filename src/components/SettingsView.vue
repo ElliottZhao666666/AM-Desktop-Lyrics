@@ -149,8 +149,8 @@
             <button class="link-button" @click.prevent="openExternal('https://github.com/ElliottZhao666666/AM-Desktop-Lyrics')">
               <GitBranch :size="15" /> GitHub 仓库
             </button>
-            <button class="link-button" type="button" disabled title="检查更新功能即将推出">
-              <RefreshCw :size="15" /> 检查更新
+            <button class="link-button" type="button" :disabled="isCheckingUpdate" @click="checkForUpdates">
+              <RefreshCw :size="15" :class="{ spin: isCheckingUpdate }" /> 检查更新
             </button>
           </div>
         </div>
@@ -167,7 +167,10 @@ import { invoke } from '@tauri-apps/api/core';
 import { listen, type UnlistenFn } from '@tauri-apps/api/event';
 import { message as showMessage, open, save } from '@tauri-apps/plugin-dialog';
 import { getCurrentWindow } from '@tauri-apps/api/window';
+import { ask } from '@tauri-apps/plugin-dialog';
 import { openUrl } from '@tauri-apps/plugin-opener';
+import { relaunch } from '@tauri-apps/plugin-process';
+import { check } from '@tauri-apps/plugin-updater';
 import { Check, CloudDownload, Database, FileText, FolderOpen, Info, Palette, RefreshCw, Save, Search, Settings2, Globe, GitBranch } from '@lucide/vue';
 import type { AppSettings, MediaSnapshotPayload, MediaStatePayload, QqLyricsPreview, QqSongCandidate, RuntimeLyricsTimeOffset, ThemeFile, TrackIdentity } from '../types';
 import { buildThemeCss, cloneEditor, DEFAULT_EDITOR, PRESETS, type ThemeEditor } from '../theme';
@@ -199,6 +202,7 @@ const matchCandidates = ref<QqSongCandidate[]>([]);
 const selectedCandidate = ref<QqSongCandidate | null>(null);
 const previewText = ref('');
 const matchBusy = ref(false);
+const isCheckingUpdate = ref(false);
 const currentSection = computed(() => sections.find((item) => item.id === activeSection.value) ?? sections[0]);
 const canMatch = computed(() => Boolean(currentTrack.value.title.trim() && currentTrack.value.artist.trim() && currentTrack.value.title !== '等待播放...'));
 let unlistenLyricsTimeOffset: UnlistenFn | null = null;
@@ -398,6 +402,31 @@ function closeWindow() { getCurrentWindow().hide(); }
 async function openExternal(url: string) {
   try { await openUrl(url); } catch (error) { message.value = String(error); }
 }
+
+async function checkForUpdates() {
+  if (isCheckingUpdate.value) return;
+  isCheckingUpdate.value = true;
+  try {
+    const update = await check();
+    if (!update) {
+      await showMessage('当前已是最新版本', { title: 'AMDL', kind: 'info' });
+      return;
+    }
+    const releaseNotes = update.body?.trim() || '暂无更新日志';
+    const confirmed = await ask(
+      `发现新版本 ${update.version}\n\n${releaseNotes}\n\n是否立即下载并安装？`,
+      { title: 'AMDL 更新', kind: 'info' },
+    );
+    if (!confirmed) return;
+    message.value = '正在下载并安装更新…';
+    await update.downloadAndInstall();
+    await relaunch();
+  } catch (error) {
+    await showMessage(`检查更新失败：${String(error)}`, { title: 'AMDL', kind: 'error' });
+  } finally {
+    isCheckingUpdate.value = false;
+  }
+}
 </script>
 
 <style scoped>
@@ -549,6 +578,8 @@ async function openExternal(url: string) {
   height: 34px;
   font-size: 13px;
 }
+@keyframes spin { from { transform: rotate(0deg); } to { transform: rotate(360deg); } }
+.spin { animation: spin 1s linear infinite; }
 .appearance-workspace { min-height: 0; flex: 1; display: flex; flex-direction: column; }.appearance-toolbar { display: flex; align-items: end; gap: 14px; padding: 14px 0; border-bottom: 1px solid #dedee3; }.appearance-toolbar label { display: grid; gap: 5px; font-size: 11px; color: #777780; }.appearance-toolbar select { width: 150px; }.theme-name { width: 180px; }.file-actions { margin-left: auto; display: flex; gap: 6px; }.icon-command { height: 31px; display: flex; align-items: center; gap: 6px; border: 1px solid #ceced4; border-radius: 5px; padding: 0 10px; background: #fff; color: #55555e; cursor: pointer; }
 .appearance-grid { min-height: 0; flex: 1; display: grid; grid-template-columns: minmax(470px, 1.08fr) minmax(360px, .92fr); gap: 24px; padding-top: 14px; }.editor-pane { min-height: 0; overflow-y: auto; padding: 0 10px 8px 0; }.editor-section { padding: 0 0 16px; margin-bottom: 16px; border-bottom: 1px solid #dfdfe4; }.editor-section h2 { margin: 0 0 11px; font-size: 13px; color: #4d4d55; }.control-grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 10px 12px; }.control-grid label { min-width: 0; display: grid; gap: 5px; color: #7b7b84; font-size: 11px; }.control-grid label.wide { grid-column: span 2; }.control-grid input:not([type="checkbox"]):not([type="range"]), .control-grid select, .appearance-toolbar input, .appearance-toolbar select { box-sizing: border-box; width: 100%; height: 31px; border: 1px solid #cfcfd5; border-radius: 4px; padding: 0 7px; background: white; color: #33333a; }.control-grid input[type="color"] { padding: 3px; }.control-grid input[type="range"] { width: 100%; }.check-label { display: flex !important; align-items: center; gap: 7px !important; min-height: 31px; color: #55555e !important; }.check-label input { accent-color: #d13c86; }.range-value { color: #55555e; }.paint-controls { grid-template-columns: repeat(3, minmax(0, 1fr)); }
 .preview-pane { position: sticky; top: 0; align-self: start; min-height: 0; display: flex; flex-direction: column; }.preview-title, .source-header { height: 28px; display: flex; align-items: center; justify-content: space-between; color: #686871; font-size: 12px; font-weight: 650; }.theme-preview { position: relative; height: 176px; display: flex; align-items: center; overflow: hidden; background: #15151a; border: 1px solid #2e2e35; }.theme-preview::before { content: ''; position: absolute; inset: 0; background: linear-gradient(135deg, #23232b, #0d0d11 60%, #2b1823); }.theme-preview .amdl-lyrics { position: relative; width: 100%; padding: 20px; box-sizing: border-box; }.preview-progress { position: absolute; right: 0; bottom: 0; left: 0; height: 3px; background: #ffffff20; }.preview-progress > div { height: 100%; }.source-header { margin-top: 10px; }.text-command { border: 0; background: transparent; color: #bd2c76; cursor: pointer; }.css-editor { min-height: 110px; flex: 1; resize: none; border: 1px solid #cfcfd5; border-radius: 5px; padding: 10px; background: #fff; color: #33333a; font: 11px/1.5 Consolas, monospace; user-select: text; }

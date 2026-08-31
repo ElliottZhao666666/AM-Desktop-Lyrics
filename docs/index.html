@@ -1,0 +1,343 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    
+    <!-- 基础 SEO -->
+    <title>AMDL - 专为 Windows 版 Apple Music 打造的现代化桌面歌词工具</title>
+    <!-- 网页标签页图标 -->
+    <link rel="icon" type="image/png" href="assets/app-icon.png">
+    <!-- 苹果设备保存到主屏幕时的图标 -->
+    <link rel="apple-touch-icon" href="assets/app-icon.png">
+    <meta name="description" content="AMDL 是一款专为 Windows 版 Apple Music 打造的开源桌面歌词工具。支持智能/手动歌词匹配、高度自定义外观、逐字歌词以及繁简体自动转换。由月半菌开发。">
+    <meta name="keywords" content="Apple Music 桌面歌词, AMDL, Windows Apple Music, 歌词匹配, 桌面歌词工具, 动态歌词, 月半菌">
+    <meta name="author" content="月半菌">
+    <meta name="robots" content="index, follow">
+
+    <!-- Open Graph (社交媒体/外部链接预览优化) -->
+    <meta property="og:title" content="AMDL - 专为 Windows 版 Apple Music 打造的现代化桌面歌词工具">
+    <meta property="og:description" content="原生体验，精准匹配，完全开源。立即下载 AMDL，为你的 Windows 版 Apple Music 补齐最后一块体验拼图。">
+    <meta property="og:type" content="website">
+    <meta property="og:url" content="https://amdl.ybjun.com/">
+    <meta property="og:image" content="https://amdl.ybjun.com/assets/lyrics-preview.png">
+    <meta property="og:site_name" content="AMDL 官方网站">
+
+    <!-- 结构化数据 (JSON-LD) 提升搜索引擎理解 -->
+    <script type="application/ld+json">
+    {
+      "@context": "https://schema.org",
+      "@type": "SoftwareApplication",
+      "name": "AMDL (Apple Music Desktop Lyrics)",
+      "operatingSystem": "Windows",
+      "applicationCategory": "MultimediaApplication",
+      "author": {
+        "@type": "Person",
+        "name": "月半菌",
+        "url": "https://www.ybjun.com"
+      },
+      "description": "专为 Windows 版 Apple Music 打造的现代化桌面歌词工具，支持歌词精准匹配、外观高度自定义。",
+      "offers": {
+        "@type": "Offer",
+        "price": "0",
+        "priceCurrency": "CNY"
+      }
+    }
+    </script>
+
+    <style>
+        :root {
+            --am-pink: #fa233b;
+            --am-pink-dark: #d13c86;
+            --text-main: #1d1d1f;
+            --text-muted: #86868b;
+            --bg-color: #fbfbfd;
+            --section-bg: #ffffff;
+        }
+
+        body {
+            margin: 0;
+            padding: 0;
+            font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "Microsoft YaHei", sans-serif;
+            background-color: var(--bg-color);
+            color: var(--text-main);
+            line-height: 1.6;
+            overflow-x: hidden;
+        }
+
+        /* 顶部导航 */
+        header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            padding: 16px 5%;
+            background: rgba(251, 251, 253, 0.85);
+            backdrop-filter: blur(20px);
+            -webkit-backdrop-filter: blur(20px);
+            position: fixed;
+            top: 0;
+            width: 100%;
+            box-sizing: border-box;
+            z-index: 1000;
+            border-bottom: 1px solid rgba(0,0,0,0.05);
+        }
+
+        .brand {
+            display: flex;
+            align-items: center;
+            gap: 12px;
+            font-size: 18px;
+            font-weight: 700;
+            color: var(--text-main);
+            text-decoration: none;
+        }
+
+        .brand img {
+            width: 32px;
+            height: 32px;
+            border-radius: 8px;
+        }
+
+        .nav-links a {
+            text-decoration: none;
+            color: var(--text-main);
+            font-size: 14px;
+            font-weight: 500;
+            margin-left: 24px;
+            transition: color 0.2s;
+        }
+
+        .nav-links a:hover {
+            color: var(--am-pink);
+        }
+
+        /* 核心视觉区 (Hero Section) */
+        .hero {
+            padding: 140px 20px 80px;
+            text-align: center;
+            position: relative;
+            background: radial-gradient(circle at top, rgba(250, 35, 59, 0.05) 0%, rgba(251, 251, 253, 0) 60%);
+        }
+
+        h1 {
+            font-size: 48px;
+            font-weight: 800;
+            letter-spacing: -0.03em;
+            margin: 0 0 16px 0;
+            line-height: 1.2;
+        }
+
+        .highlight {
+            background: linear-gradient(135deg, var(--am-pink), var(--am-pink-dark));
+            -webkit-background-clip: text;
+            -webkit-text-fill-color: transparent;
+        }
+
+        .hero-desc {
+            font-size: 20px;
+            color: var(--text-muted);
+            max-width: 600px;
+            margin: 0 auto 40px;
+        }
+
+        /* 按钮样式 */
+        .actions {
+            display: flex;
+            gap: 16px;
+            justify-content: center;
+            margin-bottom: 60px;
+        }
+
+        .btn {
+            display: inline-flex;
+            align-items: center;
+            gap: 8px;
+            padding: 14px 32px;
+            border-radius: 980px;
+            font-size: 16px;
+            font-weight: 600;
+            text-decoration: none;
+            transition: all 0.3s ease;
+        }
+
+        .btn-primary {
+            background-color: var(--am-pink);
+            color: white;
+            box-shadow: 0 4px 14px rgba(250, 35, 59, 0.25);
+        }
+
+        .btn-primary:hover {
+            background-color: #e01931;
+            transform: translateY(-2px);
+            box-shadow: 0 6px 20px rgba(250, 35, 59, 0.4);
+        }
+
+        .btn-secondary {
+            background-color: rgba(0, 0, 0, 0.05);
+            color: var(--text-main);
+        }
+
+        .btn-secondary:hover {
+            background-color: rgba(0, 0, 0, 0.08);
+            transform: translateY(-2px);
+        }
+
+        /* 主预览图 */
+        .hero-image {
+            max-width: 900px;
+            width: 100%;
+            margin: 0 auto;
+            border-radius: 16px;
+            box-shadow: 0 20px 40px rgba(0,0,0,0.1);
+            display: block;
+        }
+
+        /* 特性区 (Features Grid) */
+        .features {
+            padding: 80px 5%;
+            background-color: var(--section-bg);
+        }
+
+        .feature-row {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            gap: 60px;
+            max-width: 1100px;
+            margin: 0 auto 100px;
+        }
+
+        .feature-row:nth-child(even) {
+            flex-direction: row-reverse;
+        }
+
+        .feature-text {
+            flex: 1;
+        }
+
+        .feature-text h2 {
+            font-size: 32px;
+            font-weight: 700;
+            margin-bottom: 16px;
+            letter-spacing: -0.02em;
+        }
+
+        .feature-text p {
+            font-size: 18px;
+            color: var(--text-muted);
+        }
+
+        .feature-image {
+            flex: 1;
+            text-align: center;
+        }
+
+        .feature-image img {
+            width: 100%;
+            max-width: 500px;
+            border-radius: 12px;
+            box-shadow: 0 10px 30px rgba(0,0,0,0.08);
+            border: 1px solid rgba(0,0,0,0.05);
+        }
+
+        /* 底部版权 */
+        footer {
+            padding: 40px 20px;
+            text-align: center;
+            background-color: var(--bg-color);
+            font-size: 13px;
+            color: var(--text-muted);
+            border-top: 1px solid rgba(0,0,0,0.05);
+        }
+
+        footer a {
+            color: var(--am-pink-dark);
+            text-decoration: none;
+            font-weight: 600;
+        }
+
+        footer a:hover {
+            text-decoration: underline;
+        }
+
+        /* 响应式 */
+        @media (max-width: 860px) {
+            h1 { font-size: 36px; }
+            .hero-desc { font-size: 16px; }
+            .feature-row, .feature-row:nth-child(even) {
+                flex-direction: column;
+                text-align: center;
+                gap: 30px;
+                margin-bottom: 70px;
+            }
+        }
+    </style>
+</head>
+<body>
+
+    <!-- 导航栏 -->
+    <header>
+        <a href="/" class="brand">
+            <img src="assets/app-icon.png" alt="AMDL 图标">
+            AMDL
+        </a>
+        <nav class="nav-links">
+            <a href="https://github.com/ElliottZhao666666/AM-Desktop-Lyrics" target="_blank" rel="noopener">GitHub 仓库</a>
+            <a href="https://www.ybjun.com" target="_blank" rel="noopener">月半菌</a>
+        </nav>
+    </header>
+
+    <main>
+        <!-- 主视觉区 -->
+        <section class="hero">
+            <h1>AMDL - <span class="highlight">Apple Music 桌面歌词</span></h1>
+            <p class="hero-desc">专为 Windows 版 Apple Music 打造的现代化桌面歌词工具。原生体验，精准匹配，完全开源免费。</p>
+            
+            <div class="actions">
+                <a href="https://github.com/ElliottZhao666666/AM-Desktop-Lyrics/releases/latest" class="btn btn-primary" target="_blank" rel="noopener">
+                    下载最新版本
+                </a>
+                <a href="https://github.com/ElliottZhao666666/AM-Desktop-Lyrics" class="btn btn-secondary" target="_blank" rel="noopener">
+                    查看源代码
+                </a>
+            </div>
+
+            <img src="assets/lyrics-preview.png" alt="AMDL 沉浸式桌面歌词展示" class="hero-image">
+        </section>
+
+        <!-- 详细特性区 -->
+        <section class="features">
+            
+            <!-- 特性 1：智能匹配 -->
+            <div class="feature-row">
+                <div class="feature-text">
+                    <h2>智能与手动歌词匹配</h2>
+                    <p>内置强大的歌词匹配引擎，自动识别当前播放曲目。当遇到生僻歌曲时，更提供直观的手动搜索与应用功能，确保歌词万无一失。支持保存匹配记录，一次匹配，永久生效。</p>
+                </div>
+                <div class="feature-image">
+                    <img src="assets/match-preview.png" alt="AMDL 歌词匹配界面功能演示">
+                </div>
+            </div>
+
+            <!-- 特性 2：高度自定义 -->
+            <div class="feature-row">
+                <div class="feature-text">
+                    <h2>随心所欲的外观定制</h2>
+                    <p>告别千篇一律。强大的主题编辑器允许你调整字体、字号、字重、对齐方式，乃至进度条的纯色或渐变效果。支持导入导出自定义 <code>.amdlcss</code> 主题文件，打造专属于你的桌面美学。</p>
+                </div>
+                <div class="feature-image">
+                    <img src="assets/settings-preview.png" alt="AMDL 外观设置与主题编辑器展示">
+                </div>
+            </div>
+
+        </section>
+    </main>
+
+    <!-- 底部 -->
+    <footer>
+        <p>AMDL 属于开源项目。Apple Music 是 Apple Inc. 的商标。</p>
+        <p>Designed & Developed by <a href="https://www.ybjun.com" target="_blank" rel="noopener">月半菌</a>. All rights reserved.</p>
+    </footer>
+
+</body>
+</html>

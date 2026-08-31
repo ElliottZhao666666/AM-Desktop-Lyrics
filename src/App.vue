@@ -45,6 +45,9 @@ import { computed, ref, onMounted, onUnmounted } from 'vue';
 import { invoke } from '@tauri-apps/api/core';
 import { listen, type UnlistenFn } from '@tauri-apps/api/event';
 import { getCurrentWindow } from '@tauri-apps/api/window';
+import { ask } from '@tauri-apps/plugin-dialog';
+import { relaunch } from '@tauri-apps/plugin-process';
+import { check } from '@tauri-apps/plugin-updater';
 import ControlBar from './components/ControlBar.vue';
 import LyricsBoard from './components/LyricsBoard.vue';
 import SettingsView from './components/SettingsView.vue';
@@ -108,6 +111,23 @@ const resizeEdges: Array<{ direction: ResizeDirection; className: string }> = [
   { direction: 'SouthWest', className: 'resize-south-west' },
   { direction: 'SouthEast', className: 'resize-south-east' },
 ];
+
+async function checkForStartupUpdate() {
+  try {
+    const update = await check();
+    if (!update) return;
+    const releaseNotes = update.body?.trim() || '暂无更新日志';
+    const confirmed = await ask(
+      `发现新版本 ${update.version}\n\n${releaseNotes}\n\n是否立即下载并安装？`,
+      { title: 'AMDL 更新', kind: 'info' },
+    );
+    if (!confirmed) return;
+    await update.downloadAndInstall();
+    await relaunch();
+  } catch {
+    // 启动检查静默失败，不显示错误弹窗。
+  }
+}
 
 function applyTheme(css: string) {
   let style = document.querySelector<HTMLStyleElement>('#amdl-runtime-theme');
@@ -180,6 +200,7 @@ function applyMediaState(payload: MediaStatePayload) {
 // 生命周期
 // ==========================================
 onMounted(async () => {
+  if (currentWindowLabel === 'main') void checkForStartupUpdate();
   if (isSettingsWindow || isUnlockWindow) return;
 
   unlistenLockState = await listen<boolean>('lock-state-changed', (event) => {

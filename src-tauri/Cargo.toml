@@ -37,4 +37,6 @@ windows = { version = "0.61", features = [
 tokio = { version = "1", features = ["rt", "time", "sync"] }
 tauri-plugin-dialog = "2.7.2"
 winreg = "0.56.0"
+tauri-plugin-updater = "2.11.0"
+tauri-plugin-process = "2.3.1"
 
