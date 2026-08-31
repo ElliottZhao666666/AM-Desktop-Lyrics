@@ -65,7 +65,7 @@
   },
   "bundle": {
     "active": true,
-    "targets": "all",
+    "targets": "nsis",
     "publisher": "月半菌",
     "homepage": "https://amdl.ybjun.com",
     "shortDescription": "Apple Music 桌面歌词工具",
