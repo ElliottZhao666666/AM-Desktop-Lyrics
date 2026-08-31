@@ -3,7 +3,7 @@
   "productName": "Apple Music Desktop Lyrics",
   "mainBinaryName": "AMDL",
   "version": "1.0.0",
-  "identifier": "com.crh38.tauri-app",
+  "identifier": "com.ybjun.amdl",
   "build": {
     "beforeDevCommand": "pnpm dev",
     "devUrl": "http://127.0.0.1:5566",
