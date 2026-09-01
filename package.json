@@ -10,7 +10,7 @@
     "build": "vue-tsc --noEmit && vite build",
     "preview": "vite preview",
     "tauri": "tauri",
-    "tauri:build:signed": "tauri build --config src-tauri/tauri.local.conf.json"
+    "tauri:build:signed": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/build-signed.ps1"
   },
   "dependencies": {
     "@lucide/vue": "^1.35.0",
