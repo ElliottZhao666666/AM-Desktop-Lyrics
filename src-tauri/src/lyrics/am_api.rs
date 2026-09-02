@@ -27,7 +27,11 @@ pub async fn fetch_syllable_lyrics(
     if !tokens.media_user_token.trim().is_empty() {
         request = request.header("media-user-token", tokens.media_user_token);
     }
-    let response = request.send().await?;
+    let response = request
+        .header("Origin", "https://music.apple.com")
+        .header("Referer", "https://music.apple.com/")
+        .send()
+        .await?;
     let status = response.status();
     let body = response.text().await?;
     if !status.is_success() {

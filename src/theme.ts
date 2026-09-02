@@ -261,6 +261,8 @@ export function buildThemeCss(editor: ThemeEditor) {
 .amdl-lyrics-stack { width: 100%; }
 ${textRule('.amdl-lyric-line', editor.normal)}
 ${textRule('.amdl-lyric-line.is-active', editor.active)}
+${textRule('.amdl-lyric-word', editor.normal)}
+${textRule('.amdl-lyric-word-highlight.is-active', editor.active)}
 .amdl-progress-fill { background: ${colorValue(editor.progress)}; }`;
 }
 

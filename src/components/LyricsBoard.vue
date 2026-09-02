@@ -8,9 +8,11 @@
         <div class="amdl-lyric-line is-active">{{ displayText }}</div>
       </template>
       <template v-else-if="displayLines.length">
-        <div v-for="line in displayLines" :key="`${line.begin_ms}-${line.text}`" class="amdl-lyric-line is-active">
+        <div v-for="line in displayLines" :key="`${line.begin_ms}-${line.text}`" class="amdl-lyric-line" :class="{ 'is-active': isLineActive(line), 'has-word-timeline': Boolean(line.words?.length) }">
           <template v-if="line.words?.length">
-            <span v-for="(word, wordIndex) in line.words" :key="`${word.begin_ms}-${wordIndex}`" class="amdl-lyric-word" :class="{ 'is-complete': props.positionMs >= word.end_ms, 'is-current': props.positionMs >= word.begin_ms && props.positionMs < word.end_ms }" :style="wordStyle(word)">{{ word.text }}</span>
+            <span v-for="(word, wordIndex) in line.words" :key="`${word.begin_ms}-${wordIndex}`" class="amdl-lyric-word" :style="wordStyle(word)">
+              <span v-if="wordProgress(word) > 0" class="amdl-lyric-word-highlight" :class="{ 'is-active': true }">{{ word.text }}</span>{{ word.text }}
+            </span>
           </template>
           <template v-else>{{ line.text }}</template>
         </div>
@@ -82,11 +84,18 @@ const displayText = computed(() => {
   return '';
 });
 
-function wordStyle(word: LyricWord) {
+function isLineActive(line: { begin_ms: number; end_ms: number | null }) {
+  return props.lyrics?.lines[activeLineIndex.value] === line;
+}
+
+function wordProgress(word: LyricWord) {
   const duration = Math.max(1, word.end_ms - word.begin_ms);
-  const progress = Math.max(0, Math.min(1, (props.positionMs - word.begin_ms) / duration));
+  return Math.max(0, Math.min(1, (props.positionMs - word.begin_ms) / duration));
+}
+
+function wordStyle(word: LyricWord) {
   return {
-    '--word-progress': `${progress * 100}%`,
+    '--word-progress': `${wordProgress(word) * 100}%`,
   } as Record<string, string>;
 }
 
@@ -94,14 +103,16 @@ function wordStyle(word: LyricWord) {
 
 <style scoped>
 .amdl-lyric-word {
-  color: color-mix(in srgb, currentColor 42%, transparent);
-  background: linear-gradient(90deg, currentColor var(--word-progress), transparent var(--word-progress));
-  background-clip: text;
-  -webkit-background-clip: text;
-  transition: color 80ms linear;
+  position: relative;
+  display: inline-block;
 }
 
-.amdl-lyric-word.is-complete {
-  color: currentColor;
+.amdl-lyric-word-highlight {
+  position: absolute;
+  inset: 0;
+  overflow: hidden;
+  white-space: pre;
+  clip-path: inset(0 calc(100% - var(--word-progress)) 0 0);
+  pointer-events: none;
 }
 </style>

@@ -6,12 +6,30 @@ use std::error::Error;
 use super::models::{LyricLine, LyricWord};
 
 pub fn parse_ttml(xml: &str) -> Result<Vec<LyricLine>, Box<dyn Error + Send + Sync>> {
-    parse_ttml_with_translation(xml, xml.contains("extend") || xml.contains("<translations"))
+    parse_ttml_with_translation(xml, xml.contains("<translations"))
 }
 
 pub fn parse_ttml_with_translation(
     xml: &str,
     prefer_translation: bool,
+) -> Result<Vec<LyricLine>, Box<dyn Error + Send + Sync>> {
+    let body_lines = parse_ttml_section(xml, false)?;
+    if prefer_translation {
+        let translated_lines = parse_ttml_section(xml, true)?;
+        // replacement 翻译带有完整逐字时间轴，可直接替代原文；subtitle
+        // 翻译没有逐字时间，不能拿来驱动高亮，因此仍使用正文时间轴。
+        if !translated_lines.is_empty()
+            && translated_lines.iter().all(|line| line.words.as_ref().is_some_and(|words| !words.is_empty()))
+        {
+            return Ok(translated_lines);
+        }
+    }
+    Ok(body_lines)
+}
+
+fn parse_ttml_section(
+    xml: &str,
+    translation_only: bool,
 ) -> Result<Vec<LyricLine>, Box<dyn Error + Send + Sync>> {
     let mut reader = Reader::from_str(xml);
     reader.config_mut().trim_text(false);
@@ -28,26 +46,27 @@ pub fn parse_ttml_with_translation(
         match reader.read_event()? {
             Event::Start(element) => {
                 let name = local_name(element.name().as_ref()).to_vec();
-                if name == b"translations" && prefer_translation {
+                if name == b"translations" {
                     in_translation = true;
                     translation_depth = stack.len() + 1;
                 }
                 let is_translation_text = in_translation && name == b"text";
-                if name == b"body" && (!prefer_translation || !in_translation) {
+                if name == b"body" {
                     in_body = true;
-                } else if is_translation_text || (in_body && name == b"p") {
-                    if name == b"p" || is_translation_text {
-                        let begin = attr_time(&element, b"begin", &reader)?.unwrap_or(0);
-                        let end = attr_time(&element, b"end", &reader)?;
-                        current = Some(PendingLine { begin, end, text: String::new(), words: Vec::new() });
-                    }
+                } else if (translation_only && is_translation_text) || (!translation_only && in_body && name == b"p") {
+                    let begin = attr_time(&element, b"begin", &reader)?.unwrap_or(0);
+                    let end = attr_time(&element, b"end", &reader)?;
+                    current = Some(PendingLine { begin, end, text: String::new(), words: Vec::new() });
                 } else if current.is_some() && name == b"span" {
-                    if word.is_none() {
-                        let begin = attr_time(&element, b"begin", &reader)?.unwrap_or(current.as_ref().unwrap().begin);
-                        let end = attr_time(&element, b"end", &reader)?.unwrap_or(begin);
+                    let begin = attr_time(&element, b"begin", &reader)?;
+                    let end = attr_time(&element, b"end", &reader)?;
+                    // x-bg 等容器 span 本身没有时间，实际时间位于其子 span。
+                    if word.is_none() && begin.is_some() && end.is_some() {
+                        let begin = begin.unwrap();
+                        let end = end.unwrap();
                         word = Some(PendingWord { begin, end, text: String::new() });
                         word_depth = 1;
-                    } else { word_depth += 1; }
+                    } else if word.is_some() { word_depth += 1; }
                 }
                 stack.push(String::from_utf8_lossy(&name).into_owned());
             }
@@ -70,11 +89,13 @@ pub fn parse_ttml_with_translation(
                         }
                     }
                 }
-                if (name == b"p" || name == b"text") && current.is_some() {
+                if ((!translation_only && name == b"p") || (translation_only && name == b"text")) && current.is_some() {
                     let item = current.take().unwrap();
                     let text = if item.text.trim().is_empty() { item.words.iter().map(|w| w.text.as_str()).collect() } else { item.text.clone() };
                     if !text.trim().is_empty() {
-                        lines.push(LyricLine { begin: item.begin as f64, end: item.end.map(|v| v as f64), text, words: (!item.words.is_empty()).then_some(item.words) });
+                        let begin = item.words.first().map(|word| word.begin as u64).unwrap_or(item.begin);
+                        let end = item.end.or_else(|| item.words.last().map(|word| word.end as u64));
+                        lines.push(LyricLine { begin: begin as f64, end: end.map(|v| v as f64), text, words: (!item.words.is_empty()).then_some(item.words) });
                     }
                 }
                 if name == b"body" { in_body = false; }
@@ -90,8 +111,16 @@ pub fn parse_ttml_with_translation(
 }
 
 fn push_text(line: &mut Option<PendingLine>, word: &mut Option<PendingWord>, text: &str) {
-    if let Some(item) = word { item.text.push_str(text); }
-    else if let Some(item) = line { item.text.push_str(text); }
+    if let Some(item) = line { item.text.push_str(text); }
+    if let Some(item) = word {
+        item.text.push_str(text);
+    } else if text.chars().all(char::is_whitespace) {
+        // TTML 用 span 之间的文本节点表达英文词间空格。将它附加到前一个
+        // 词元，逐字渲染时才能保持原始排版。
+        if let Some(last) = line.as_mut().and_then(|item| item.words.last_mut()) {
+            last.text.push_str(text);
+        }
+    }
 }
 
 fn local_name(name: &[u8]) -> &[u8] { name.rsplit(|byte| *byte == b':').next().unwrap_or(name) }
