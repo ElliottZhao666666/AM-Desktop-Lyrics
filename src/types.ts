@@ -6,7 +6,7 @@ export interface TrackIdentity {
   album: string | null;
 }
 
-export type LyricsSource = 'appleMusicCache' | 'qqMusic' | 'amllDb' | 'dummy';
+export type LyricsSource = 'appleMusicApi' | 'appleMusicCache' | 'qqMusic' | 'amllDb' | 'dummy';
 
 export interface LyricWord {
   text: string;
@@ -88,4 +88,22 @@ export interface QqSongCandidate {
 export interface QqLyricsPreview {
   candidate: QqSongCandidate;
   lyricsText: string;
+}
+
+export interface LyricsSourceConfig {
+  id: string;
+  name: string;
+  enabled: boolean;
+  priority: number;
+}
+
+export interface AmApiTokens {
+  authToken: string;
+  mediaUserToken: string;
+}
+
+export interface AppConfig {
+  lyricsSources: LyricsSourceConfig[];
+  amApiTokens: AmApiTokens;
+  autoChs: boolean;
 }

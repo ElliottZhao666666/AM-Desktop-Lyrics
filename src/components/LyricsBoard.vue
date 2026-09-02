@@ -9,7 +9,10 @@
       </template>
       <template v-else-if="displayLines.length">
         <div v-for="line in displayLines" :key="`${line.begin_ms}-${line.text}`" class="amdl-lyric-line is-active">
-          {{ line.text }}
+          <template v-if="line.words?.length">
+            <span v-for="(word, wordIndex) in line.words" :key="`${word.begin_ms}-${wordIndex}`" class="amdl-lyric-word" :class="{ 'is-complete': props.positionMs >= word.end_ms, 'is-current': props.positionMs >= word.begin_ms && props.positionMs < word.end_ms }" :style="wordStyle(word)">{{ word.text }}</span>
+          </template>
+          <template v-else>{{ line.text }}</template>
         </div>
       </template>
     </div>
@@ -20,7 +23,7 @@
 <script setup lang="ts">
 import { computed } from 'vue';
 
-import type { LyricsDocument, LyricsLoadState } from '../types';
+import type { LyricWord, LyricsDocument, LyricsLoadState } from '../types';
 
 const props = defineProps<{
   title: string;
@@ -79,4 +82,26 @@ const displayText = computed(() => {
   return '';
 });
 
+function wordStyle(word: LyricWord) {
+  const duration = Math.max(1, word.end_ms - word.begin_ms);
+  const progress = Math.max(0, Math.min(1, (props.positionMs - word.begin_ms) / duration));
+  return {
+    '--word-progress': `${progress * 100}%`,
+  } as Record<string, string>;
+}
+
 </script>
+
+<style scoped>
+.amdl-lyric-word {
+  color: color-mix(in srgb, currentColor 42%, transparent);
+  background: linear-gradient(90deg, currentColor var(--word-progress), transparent var(--word-progress));
+  background-clip: text;
+  -webkit-background-clip: text;
+  transition: color 80ms linear;
+}
+
+.amdl-lyric-word.is-complete {
+  color: currentColor;
+}
+</style>

@@ -13,6 +13,7 @@ macro_rules! eprintln {
 }
 
 pub mod app_paths;
+pub mod config;
 pub mod domain;
 pub mod logger;
 pub mod lyrics;
@@ -183,6 +184,22 @@ fn save_settings(app: AppHandle, settings: AppSettings) -> Result<(), String> {
     app.emit("settings-changed", &settings)
         .map_err(|error| format!("广播设置失败: {error}"))?;
     Ok(())
+}
+
+#[tauri::command]
+fn get_config() -> Result<config::AppConfig, String> {
+    let _guard = SETTINGS_IO_LOCK
+        .lock()
+        .map_err(|_| "设置文件锁已损坏".to_string())?;
+    config::read_config().map(|config| config.normalize())
+}
+
+#[tauri::command]
+fn save_config(config: config::AppConfig) -> Result<(), String> {
+    let _guard = SETTINGS_IO_LOCK
+        .lock()
+        .map_err(|_| "设置文件锁已损坏".to_string())?;
+    config::write_config(&config.normalize())
 }
 
 #[tauri::command]
@@ -750,6 +767,8 @@ pub fn run() {
             media::smtc::prev_track,
             get_settings,
             save_settings,
+            get_config,
+            save_config,
             get_runtime_lyrics_time_offset,
             set_runtime_lyrics_time_offset,
             adjust_runtime_lyrics_time_offset,

@@ -123,7 +123,11 @@ fn emit_state_and_fetch_lyrics(app_handle: &tauri::AppHandle, payload: MediaStat
         crate::lyrics::provider::enter_waiting_state();
         return;
     }
-    crate::lyrics::provider::fetch_and_emit_lyrics(payload.track, app_handle.clone());
+    let duration_ms = CURRENT_MEDIA_POSITION
+        .lock()
+        .map(|position| position.duration_ms)
+        .unwrap_or_default();
+    crate::lyrics::provider::fetch_and_emit_lyrics(payload.track, app_handle.clone(), duration_ms);
 }
 
 fn store_media_state(payload: &MediaStatePayload) {
@@ -418,6 +422,16 @@ fn smtc_main_loop(app_handle: Arc<tauri::AppHandle>) {
                         };
 
                         // 初始触发一次状态发送和歌词检索
+                        if let Ok(timeline) = session.GetTimelineProperties() {
+                            if let (Ok(end), Ok(start)) = (timeline.EndTime(), timeline.StartTime()) {
+                                let duration_ms = (end.Duration - start.Duration).max(0) as u64 / 10_000;
+                                store_media_position(&MediaPositionPayload {
+                                    position_ms: 0,
+                                    duration_ms,
+                                });
+                                println!("[SMTC] 初始读取歌曲时长: {}ms", duration_ms);
+                            }
+                        }
                         if let Ok(payload) = read_media_state(&session) {
                             emit_state_and_fetch_lyrics(&app_handle, payload);
                         }

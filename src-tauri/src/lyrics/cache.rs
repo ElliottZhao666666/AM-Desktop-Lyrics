@@ -9,8 +9,8 @@ use ferrous_opencc::{config::BuiltinConfig, OpenCC};
 const CACHE_FILE_PREFIX: &str = "ttmlLyrics";
 const MAX_CACHE_FILE_SIZE: u64 = 8 * 1024 * 1024;
 const CACHE_TIMESTAMP_TOLERANCE: Duration = Duration::from_secs(2);
-const CACHE_SCAN_ATTEMPTS: usize = 5;
-const CACHE_SCAN_INTERVAL: Duration = Duration::from_millis(120);
+const CACHE_SCAN_ATTEMPTS: usize = 8;
+const CACHE_SCAN_INTERVAL: Duration = Duration::from_millis(240);
 const DEFAULT_AUTO_CONVERT_TRADITIONAL_TO_SIMPLIFIED: bool = true;
 
 #[derive(serde::Deserialize)]

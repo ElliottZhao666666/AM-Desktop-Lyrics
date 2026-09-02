@@ -12,6 +12,7 @@ pub struct TrackIdentity {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub enum LyricsSource {
+    AppleMusicApi,
     AppleMusicCache,
     QqMusic,
     AmllDb,

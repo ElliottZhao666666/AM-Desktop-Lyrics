@@ -124,6 +124,24 @@
         </div>
       </div>
 
+      <div v-else-if="activeSection === 'lyricsSources'" class="sources-workspace">
+        <div class="sources-intro"><strong>歌词获取渠道</strong><p>按优先级依次尝试启用的渠道。手动匹配结果和永久匹配始终优先。</p></div>
+        <div class="source-list">
+          <div v-for="source in sortedLyricsSources" :key="source.id" class="source-card" :class="{ disabled: source.id === 'neteaseMusic' }">
+            <div class="source-order">{{ source.priority }}</div>
+            <div class="source-info"><strong>{{ source.name }}</strong><p>{{ source.id === 'appleMusicApi' ? '需要 Apple Music API Token' : source.id === 'appleMusicCache' ? '读取 Apple Music Windows 版本地缓存' : source.id === 'qqMusic' ? '在线搜索 QQ 音乐歌词' : source.id === 'neteaseMusic' ? '暂未开放' : '使用匹配歌词页面中设置为始终使用的歌词' }}</p></div>
+            <button v-if="source.id === 'appleMusicApi'" class="text-command" @click="tokensExpanded = !tokensExpanded">{{ tokensExpanded ? '收起 Token' : '配置 Token' }}</button>
+            <button class="switch" :class="{ on: source.enabled }" :disabled="source.id === 'neteaseMusic'" role="switch" :aria-checked="source.enabled" @click="source.enabled = !source.enabled"><span /></button>
+          </div>
+        </div>
+        <div v-if="tokensExpanded" class="token-panel">
+          <label>Authorization Token<input v-model="config.amApiTokens.authToken" type="password" autocomplete="off" /></label>
+          <label>Media User Token<input v-model="config.amApiTokens.mediaUserToken" type="password" autocomplete="off" /></label>
+          <button class="text-command" @click="openExternal('https://amdl.ybjun.com/help/get-token')">帮助获取 Token</button>
+          <p>Token 仅保存在本机配置中，点击底部“保存并生效”后才会写入。</p>
+        </div>
+      </div>
+
       <div v-else class="about-panel">
         <div class="about-content">
           <!-- 核心标志与版本信息 -->
@@ -156,7 +174,7 @@
         </div>
       </div>
 
-      <footer class="settings-footer"><span class="save-message">{{ message }}</span><div v-if="activeSection === 'general' || activeSection === 'appearance'" class="footer-actions"><button class="button secondary" @click="closeWindow">取消</button><button class="button primary" @click="saveSettings">应用</button></div></footer>
+      <footer class="settings-footer"><span class="save-message">{{ message }}</span><div v-if="activeSection === 'general' || activeSection === 'appearance' || activeSection === 'lyricsSources'" class="footer-actions"><button class="button secondary" @click="closeWindow">取消</button><button class="button primary" @click="saveAll">{{ activeSection === 'lyricsSources' ? '保存并生效' : '应用' }}</button></div></footer>
     </section>
   </main>
 </template>
@@ -172,14 +190,14 @@ import { openUrl } from '@tauri-apps/plugin-opener';
 import { relaunch } from '@tauri-apps/plugin-process';
 import { check } from '@tauri-apps/plugin-updater';
 import { Check, CloudDownload, Database, FileText, FolderOpen, Info, Palette, RefreshCw, Save, Search, Settings2, Globe, GitBranch } from '@lucide/vue';
-import type { AppSettings, MediaSnapshotPayload, MediaStatePayload, QqLyricsPreview, QqSongCandidate, RuntimeLyricsTimeOffset, ThemeFile, TrackIdentity } from '../types';
+import type { AppConfig, AppSettings, MediaSnapshotPayload, MediaStatePayload, QqLyricsPreview, QqSongCandidate, RuntimeLyricsTimeOffset, ThemeFile, TrackIdentity } from '../types';
 import { buildThemeCss, cloneEditor, DEFAULT_EDITOR, PRESETS, type ThemeEditor } from '../theme';
 import TextStyleEditor from './TextStyleEditor.vue';
 import appIcon from '../../app-icon.png';
 
 const appVersion = __APP_VERSION__;
 
-const sections = [{ id: 'general', label: '通用', icon: Settings2 }, { id: 'appearance', label: '外观', icon: Palette }, { id: 'lyricsMatch', label: '匹配歌词', icon: Search }, { id: 'logs', label: '日志', icon: FileText }, { id: 'about', label: '关于', icon: Info }] as const;
+const sections = [{ id: 'general', label: '通用', icon: Settings2 }, { id: 'appearance', label: '外观', icon: Palette }, { id: 'lyricsMatch', label: '匹配歌词', icon: Search }, { id: 'lyricsSources', label: '歌词渠道', icon: CloudDownload }, { id: 'logs', label: '日志', icon: FileText }, { id: 'about', label: '关于', icon: Info }] as const;
 const activeSection = ref<typeof sections[number]['id']>('general');
 const settings = ref<AppSettings>({
   autoConvertTraditionalToSimplified: true,
@@ -211,6 +229,9 @@ let lyricsTimeOffsetRevision = -1;
 let latestLyricsTimeOffset: RuntimeLyricsTimeOffset = { offsetMs: 0, revision: -1 };
 let pendingLyricsOffsetUpdate: Promise<void> = Promise.resolve();
 const lyricsOffsetInput = ref('0');
+const config = ref<AppConfig>({ lyricsSources: [], amApiTokens: { authToken: '', mediaUserToken: '' }, autoChs: true });
+const tokensExpanded = ref(false);
+const sortedLyricsSources = computed(() => [...config.value.lyricsSources].sort((a, b) => a.priority - b.priority));
 
 watch(activeSection, (section) => {
   if (section === 'logs') void refreshLog();
@@ -230,13 +251,15 @@ onMounted(async () => {
       applyLyricsTimeOffset(event.payload);
     });
     unlistenMediaState = await listen<MediaStatePayload>('media-state-changed', (event) => updateCurrentTrack(event.payload.track));
-    const [loadedSettings, runtimeOffset, fonts, mediaSnapshot] = await Promise.all([
+    const [loadedSettings, loadedConfig, runtimeOffset, fonts, mediaSnapshot] = await Promise.all([
       invoke<AppSettings>('get_settings'),
+      invoke<AppConfig>('get_config'),
       invoke<RuntimeLyricsTimeOffset>('get_runtime_lyrics_time_offset'),
       invoke<string[]>('get_system_fonts'),
       invoke<MediaSnapshotPayload>('get_media_snapshot'),
     ]);
     settings.value = loadedSettings;
+    config.value = loadedConfig;
     applyLyricsTimeOffset(runtimeOffset);
     applyLyricsTimeOffset(latestLyricsTimeOffset);
     systemFonts.value = fonts.length > 0 ? fonts : systemFonts.value;
@@ -398,6 +421,13 @@ async function saveSettings() {
   settings.value.lyricsTimeOffsetMs = latestLyricsTimeOffset.offsetMs;
   try { await invoke('save_settings', { settings: settings.value }); message.value = '已应用'; setTimeout(() => { message.value = ''; }, 1800); } catch (error) { message.value = String(error); }
 }
+async function saveAll() {
+  if (activeSection.value === 'lyricsSources') {
+    try { await invoke('save_config', { config: config.value }); message.value = '配置已保存并生效'; } catch (error) { message.value = String(error); }
+    return;
+  }
+  await saveSettings();
+}
 function closeWindow() { getCurrentWindow().hide(); }
 async function openExternal(url: string) {
   try { await openUrl(url); } catch (error) { message.value = String(error); }
@@ -433,6 +463,7 @@ async function checkForUpdates() {
 .settings-shell { width: 100vw; height: 100vh; display: flex; overflow: hidden; color: #24242a; background: #f4f4f6; font-family: "Segoe UI", "Microsoft YaHei", sans-serif; }
 .settings-sidebar { width: 176px; flex: 0 0 176px; padding: 28px 14px; box-sizing: border-box; background: #e9e9ed; border-right: 1px solid #d8d8dd; }.brand-mark { display: flex; align-items: center; gap: 9px; margin: 0 14px 30px; font-size: 18px; font-weight: 750; color: #d9428b; }.brand-mark img { width: 28px; height: 28px; border-radius: 7px; }.nav-item { width: 100%; height: 42px; display: flex; align-items: center; gap: 11px; border: 0; border-radius: 7px; padding: 0 13px; color: #55555e; background: transparent; font-size: 14px; cursor: pointer; }.nav-item:hover { background: #dedee4; }.nav-item.active { color: #bd2c76; background: #fff; box-shadow: 0 1px 3px #00000012; font-weight: 650; }
 .settings-content { min-width: 0; flex: 1; padding: 28px 34px 22px; box-sizing: border-box; display: flex; flex-direction: column; }.settings-header { padding-bottom: 18px; border-bottom: 1px solid #dedee3; }.eyebrow { margin: 0 0 5px; color: #c13a7c; font-size: 11px; font-weight: 700; }.settings-header h1 { margin: 0; font-size: 22px; }.settings-list { padding-top: 8px; }.setting-row { min-height: 76px; display: flex; align-items: center; justify-content: space-between; gap: 20px; border-bottom: 1px solid #e1e1e5; }.setting-row strong { font-size: 14px; }.setting-row p { margin: 6px 0 0; color: #85858e; font-size: 12px; }.switch { width: 38px; height: 22px; padding: 2px; border: 0; border-radius: 12px; background: #c6c6cc; cursor: pointer; }.switch span { display: block; width: 18px; height: 18px; border-radius: 50%; background: white; transition: transform .18s; }.switch.on { background: #d53e8b; }.switch.on span { transform: translateX(16px); }
+.sources-workspace { flex: 1; min-height: 0; overflow-y: auto; padding-top: 14px; }.sources-intro strong { font-size: 15px; }.sources-intro p, .token-panel p { margin: 6px 0 14px; color: #85858e; font-size: 12px; }.source-list { display: grid; gap: 8px; }.source-card { min-height: 62px; display: flex; align-items: center; gap: 13px; padding: 0 14px; background: #fff; border: 1px solid #e0e0e5; border-radius: 8px; }.source-card.disabled { opacity: .55; }.source-order { width: 25px; height: 25px; display: grid; place-items: center; border-radius: 50%; color: #bd2c76; background: #f9e5f0; font-size: 12px; font-weight: 700; }.source-info { flex: 1; min-width: 0; }.source-info strong { font-size: 13px; }.source-info p { margin: 4px 0 0; color: #85858e; font-size: 11px; }.source-card .text-command { margin-right: 8px; }.token-panel { display: grid; gap: 10px; margin-top: 14px; padding: 16px; background: #fff; border: 1px solid #dedee3; border-radius: 8px; }.token-panel label { display: grid; gap: 5px; color: #777780; font-size: 11px; }.token-panel input { height: 32px; box-sizing: border-box; padding: 0 8px; border: 1px solid #cfcfd5; border-radius: 4px; }.token-panel .text-command { justify-self: start; padding: 0; }.token-panel p { margin: 0; }
 /* --- 经典“关于”页面 (Standard About Interface) --- */
 .about-panel {
   flex: 1;
