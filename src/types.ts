@@ -42,6 +42,9 @@ export interface MediaPositionPayload {
   playback_rate: number;
   track_revision: number;
   revision: number;
+  sampled_at_ms?: number;
+  discontinuity?: boolean;
+  timeline_revision?: number;
 }
 
 export interface MediaSnapshotPayload {

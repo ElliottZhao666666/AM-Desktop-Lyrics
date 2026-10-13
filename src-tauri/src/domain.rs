@@ -85,6 +85,12 @@ pub struct MediaPositionPayload {
     pub playback_rate: f64,
     pub track_revision: u64,
     pub revision: u64,
+    #[serde(default)]
+    pub sampled_at_ms: u64,
+    #[serde(default)]
+    pub discontinuity: bool,
+    #[serde(default)]
+    pub timeline_revision: u64,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]

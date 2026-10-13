@@ -227,6 +227,103 @@ fn estimate_position(sample: TimelineSample, playing: bool, now: i64) -> MediaPo
         playback_rate: sample.rate,
         track_revision: 0,
         revision: 0,
+        sampled_at_ms: now.saturating_sub(116444736000000000).max(0) as u64 / 10000,
+        discontinuity: false,
+        timeline_revision: 0,
+    }
+}
+
+/// 同一份 SMTC 样本只建一次锚点；暂停时冻结单调时钟，恢复不累计暂停时间。
+#[derive(Default)]
+struct TimelineTracker {
+    sample: Option<TimelineSample>,
+    track_revision: u64,
+    position_ms: f64,
+    observed_ms: u64,
+    playing: bool,
+    timeline_revision: u64,
+}
+impl TimelineTracker {
+    fn observe(
+        &mut self,
+        sample: TimelineSample,
+        playing: bool,
+        track_revision: u64,
+        utc_now: i64,
+        monotonic_ms: u64,
+    ) -> MediaPositionPayload {
+        let first = self.sample.is_none() || self.track_revision != track_revision;
+        let previous = if first { None } else { self.sample };
+        let elapsed = monotonic_ms.saturating_sub(self.observed_ms) as f64;
+        let predicted = self.position_ms
+            + if self.playing {
+                elapsed * previous.map_or(1.0, |sample| sample.rate)
+            } else {
+                0.0
+            };
+        // 迟到旧快照不能重新成为权威位置，状态变化仍在当前锚点处理。
+        let fresh = previous.is_none_or(|previous| {
+            sample.updated_at <= 0
+                || previous.updated_at <= 0
+                || sample.updated_at >= previous.updated_at
+        });
+        let changed = fresh
+            && previous.is_none_or(|previous| {
+                previous.position_ms != sample.position_ms
+                    || previous.updated_at != sample.updated_at
+            });
+        let discontinuity = !first
+            && changed
+            && previous.is_some_and(|previous| {
+                let stamped = sample.updated_at > previous.updated_at && previous.updated_at > 0;
+                let elapsed = if self.playing && stamped {
+                    (sample.updated_at.saturating_sub(previous.updated_at)).max(0) as f64 / 10000.0
+                        * previous.rate
+                } else {
+                    0.0
+                };
+                let expected = if stamped {
+                    previous.position_ms as f64 + elapsed
+                } else {
+                    predicted
+                };
+                (sample.position_ms as f64 - expected).abs() > 1500.0
+            });
+        let mut measured = estimate_position(sample, playing, utc_now);
+        // 播放器改变 Position 却复用同一时间戳时，不能把旧时间戳的年龄再叠加。
+        if changed && previous.is_some_and(|previous| previous.updated_at == sample.updated_at) {
+            measured.position_ms = sample.position_ms;
+        }
+        // LastUpdatedTime 也会随其他时间轴属性刷新；Position 未变时保留连续锚点。
+        let position_changed =
+            previous.is_none_or(|previous| previous.position_ms != sample.position_ms);
+        self.position_ms = if first || (changed && position_changed) {
+            measured.position_ms as f64
+        } else {
+            predicted
+        };
+        if fresh {
+            self.sample = Some(sample);
+        }
+        self.track_revision = track_revision;
+        self.observed_ms = monotonic_ms;
+        self.playing = playing;
+        let accepted = self.sample.unwrap_or(sample);
+        if first || discontinuity {
+            self.timeline_revision += 1;
+        }
+        MediaPositionPayload {
+            position_ms: if accepted.duration_ms > 0 {
+                (self.position_ms.round() as u64).min(accepted.duration_ms)
+            } else {
+                self.position_ms.round() as u64
+            },
+            duration_ms: accepted.duration_ms,
+            playback_rate: accepted.rate,
+            discontinuity: first || discontinuity,
+            timeline_revision: self.timeline_revision,
+            ..measured
+        }
     }
 }
 fn read_timeline(
@@ -255,6 +352,7 @@ fn read_timeline(
 enum MediaEventKind {
     Metadata,
     Playback,
+    Timeline,
 }
 struct MediaEvent {
     session_generation: u64,
@@ -265,12 +363,16 @@ struct SessionBinding {
     session: GlobalSystemMediaTransportControlsSession,
     props_token: i64,
     playback_token: i64,
+    timeline_token: i64,
     generation: u64,
 }
 impl Drop for SessionBinding {
     fn drop(&mut self) {
         let _ = self.session.RemoveMediaPropertiesChanged(self.props_token);
         let _ = self.session.RemovePlaybackInfoChanged(self.playback_token);
+        let _ = self
+            .session
+            .RemoveTimelinePropertiesChanged(self.timeline_token);
     }
 }
 fn bind_session(
@@ -310,10 +412,31 @@ fn bind_session(
             return Err(error);
         }
     };
+    let timeline_sender = sender.clone();
+    let timeline = TypedEventHandler::new(
+        move |_session: windows::core::Ref<'_, GlobalSystemMediaTransportControlsSession>,
+              _args| {
+            let _ = timeline_sender.send(MediaEvent {
+                session_generation: generation,
+                kind: MediaEventKind::Timeline,
+                observed_at: utc_ticks(),
+            });
+            Ok(())
+        },
+    );
+    let timeline_token = match session.TimelinePropertiesChanged(&timeline) {
+        Ok(token) => token,
+        Err(error) => {
+            let _ = session.RemoveMediaPropertiesChanged(props_token);
+            let _ = session.RemovePlaybackInfoChanged(playback_token);
+            return Err(error);
+        }
+    };
     Ok(SessionBinding {
         session,
         props_token,
         playback_token,
+        timeline_token,
         generation,
     })
 }
@@ -354,6 +477,8 @@ fn smtc_main_loop(app: Arc<tauri::AppHandle>) {
         let mut binding: Option<SessionBinding> = None;
         let mut metadata_due: Option<(Instant, i64)> = None;
         let mut stale_sample: Option<TimelineSample> = None;
+        let mut timeline_tracker = TimelineTracker::default();
+        let monotonic_origin = Instant::now();
         let mut poll_due = Instant::now();
         let mut validate_due = Instant::now();
         loop {
@@ -370,6 +495,7 @@ fn smtc_main_loop(app: Arc<tauri::AppHandle>) {
                                 metadata_due = Some((Instant::now(), 0));
                                 poll_due = Instant::now();
                                 stale_sample = None;
+                                timeline_tracker = TimelineTracker::default();
                             }
                             Err(error) => {
                                 eprintln!("[SMTC] 注册事件失败: {error}");
@@ -400,6 +526,9 @@ fn smtc_main_loop(app: Arc<tauri::AppHandle>) {
                     continue;
                 }
                 match event.kind {
+                    MediaEventKind::Timeline => {
+                        poll_due = Instant::now();
+                    }
                     MediaEventKind::Metadata => {
                         metadata_due = Some((
                             Instant::now() + Duration::from_millis(400),
@@ -450,10 +579,12 @@ fn smtc_main_loop(app: Arc<tauri::AppHandle>) {
                             let position = if stale_sample == Some(sample) {
                                 MediaPositionPayload::default()
                             } else {
-                                estimate_position(
+                                timeline_tracker.observe(
                                     sample,
                                     media.playback_state == PlaybackState::Playing,
+                                    media.track_revision,
                                     utc_ticks(),
+                                    monotonic_origin.elapsed().as_millis() as u64,
                                 )
                             };
                             let duration = position.duration_ms;
@@ -488,10 +619,12 @@ fn smtc_main_loop(app: Arc<tauri::AppHandle>) {
                             stale_sample = None;
                         }
                         if stale_sample != Some(sample) {
-                            let position = estimate_position(
+                            let position = timeline_tracker.observe(
                                 sample,
                                 snapshot.media.playback_state == PlaybackState::Playing,
+                                snapshot.media.track_revision,
                                 utc_ticks(),
+                                monotonic_origin.elapsed().as_millis() as u64,
                             );
                             let duration = position.duration_ms;
                             crate::playback::update_position(
@@ -581,6 +714,165 @@ pub async fn prev_track() -> Result<(), String> {
 #[cfg(test)]
 mod tests {
     use super::{clean_artist, is_unavailable_track, parse_apple_music_metadata};
+    #[test]
+    fn unchanged_samples_use_monotonic_time_and_resume_excludes_pause_time() {
+        let sample = super::TimelineSample {
+            position_ms: 10000,
+            duration_ms: 200000,
+            updated_at: 100000000,
+            rate: 1.0,
+        };
+        let mut tracker = super::TimelineTracker::default();
+        assert_eq!(
+            tracker.observe(sample, true, 1, 100000000, 0).position_ms,
+            10000
+        );
+        assert_eq!(
+            tracker
+                .observe(sample, true, 1, 110000000, 1000)
+                .position_ms,
+            11000
+        );
+        // 系统 UTC 大幅变化也不会重新估算同一个样本。
+        assert_eq!(
+            tracker
+                .observe(sample, true, 1, 900000000, 2000)
+                .position_ms,
+            12000
+        );
+        assert_eq!(
+            tracker
+                .observe(
+                    super::TimelineSample {
+                        rate: 0.0,
+                        ..sample
+                    },
+                    false,
+                    1,
+                    910000000,
+                    2100
+                )
+                .position_ms,
+            12100
+        );
+        assert_eq!(
+            tracker
+                .observe(sample, false, 1, 950000000, 6000)
+                .position_ms,
+            12100
+        );
+        assert_eq!(
+            tracker
+                .observe(sample, true, 1, 950000000, 6000)
+                .position_ms,
+            12100
+        );
+        assert_eq!(
+            tracker
+                .observe(sample, true, 1, 960000000, 7000)
+                .position_ms,
+            13100
+        );
+    }
+    #[test]
+    fn fresh_seek_is_marked_but_quantization_and_late_samples_are_not() {
+        let sample = super::TimelineSample {
+            position_ms: 10000,
+            duration_ms: 200000,
+            updated_at: 100000000,
+            rate: 1.0,
+        };
+        let mut tracker = super::TimelineTracker::default();
+        tracker.observe(sample, true, 1, 100000000, 0);
+        let jitter = super::TimelineSample {
+            position_ms: 10800,
+            updated_at: 110000000,
+            ..sample
+        };
+        assert!(
+            !tracker
+                .observe(jitter, true, 1, 110000000, 1000)
+                .discontinuity
+        );
+        let seek = super::TimelineSample {
+            position_ms: 3000,
+            updated_at: 120000000,
+            ..sample
+        };
+        let payload = tracker.observe(seek, true, 1, 120000000, 2000);
+        assert!(payload.discontinuity);
+        assert_eq!(payload.position_ms, 3000);
+        let next_poll = tracker.observe(seek, true, 1, 125000000, 2500);
+        assert!(!next_poll.discontinuity);
+        assert_eq!(next_poll.timeline_revision, payload.timeline_revision);
+        let late = tracker.observe(jitter, true, 1, 130000000, 3000);
+        assert_eq!(late.position_ms, 4000);
+        assert!(!late.discontinuity);
+        let next_track = tracker.observe(sample, true, 2, 100000000, 4000);
+        assert_eq!(next_track.position_ms, 10000);
+        assert!(next_track.discontinuity);
+    }
+    #[test]
+    fn refreshed_timestamps_without_new_position_do_not_rewind_the_anchor() {
+        let sample = super::TimelineSample {
+            position_ms: 42000,
+            duration_ms: 200000,
+            updated_at: 100000000,
+            rate: 1.0,
+        };
+        let mut tracker = super::TimelineTracker::default();
+        assert_eq!(
+            tracker.observe(sample, true, 1, 101330000, 0).position_ms,
+            42133
+        );
+        let refreshed = super::TimelineSample {
+            updated_at: 105420000,
+            ..sample
+        };
+        let payload = tracker.observe(refreshed, true, 1, 106330000, 500);
+        assert_eq!(payload.position_ms, 42633);
+        assert!(!payload.discontinuity);
+        let progress = super::TimelineSample {
+            position_ms: 43000,
+            updated_at: 110000000,
+            ..sample
+        };
+        assert_eq!(
+            tracker
+                .observe(progress, true, 1, 110430000, 1000)
+                .position_ms,
+            43043
+        );
+    }
+    #[test]
+    #[ignore = "only reads live SMTC samples, requires Apple Music"]
+    fn traces_live_timeline_without_controlling_playback() {
+        let _apartment = super::WinRtApartment::initialize().unwrap();
+        let manager = windows::Media::Control::GlobalSystemMediaTransportControlsSessionManager::RequestAsync().unwrap().get().unwrap();
+        let session = super::find_apple_music_session(&manager)
+            .unwrap()
+            .expect("需要打开 Apple Music");
+        let origin = std::time::Instant::now();
+        let mut tracker = super::TimelineTracker::default();
+        for _ in 0..12 {
+            let sample = super::read_timeline(&session).unwrap();
+            let playing = super::read_media_state(&session).unwrap().playback_state
+                == crate::domain::PlaybackState::Playing;
+            let now = super::utc_ticks();
+            let position =
+                tracker.observe(sample, playing, 1, now, origin.elapsed().as_millis() as u64);
+            println!(
+                "[时间轴] raw={}ms age={}ms playing={} rate={} estimate={}ms seek={}",
+                sample.position_ms,
+                now.saturating_sub(sample.updated_at) / 10000,
+                playing,
+                sample.rate,
+                position.position_ms,
+                position.discontinuity
+            );
+            std::thread::sleep(std::time::Duration::from_millis(500));
+        }
+    }
 
     #[test]
     #[ignore = "requires Apple Music playing and live catalog access; only reads playback"]

@@ -8,17 +8,10 @@
         <div class="amdl-lyric-line is-active">{{ displayText }}</div>
       </template>
       <template v-else-if="displayLines.length">
-        <div v-for="line in displayLines" :key="`${line.begin_ms}-${line.text}`" class="amdl-lyric-line" :class="{ 'is-active': !line.words?.length && isLineActive(line) }">
-          <template v-if="line.words?.length">
-            <span v-for="(word, wordIndex) in line.words" :key="`${word.begin_ms}-${wordIndex}`" class="relative inline-block">
-              <span class="amdl-lyric-line inline-block whitespace-pre"
-                    :style="{ clipPath: `inset(0 0 0 ${wordProgress(word) * 100}%)` }">{{ word.text }}</span>
-              <span class="amdl-lyric-line is-active absolute inset-0 whitespace-pre"
-                    :style="{ clipPath: `inset(0 calc(100% - ${wordProgress(word) * 100}%) 0 0)` }">{{ word.text }}</span>
-            </span>
-          </template>
-          <template v-else>{{ line.text }}</template>
-        </div>
+        <template v-for="line in displayLines" :key="`${line.begin_ms}-${line.text}`">
+          <KaraokeLine v-if="line.words?.length" :line="line" :position-ms="positionMs" />
+          <div v-else class="amdl-lyric-line" :class="{ 'is-active': isLineActive(line) }">{{ line.text }}</div>
+        </template>
       </template>
     </div>
 
@@ -28,7 +21,8 @@
 <script setup lang="ts">
 import { computed } from 'vue';
 
-import type { LyricWord, LyricsDocument, LyricsLoadState } from '../types';
+import type { LyricsDocument, LyricsLoadState } from '../types';
+import KaraokeLine from './KaraokeLine.vue';
 
 const props = defineProps<{
   title: string;
@@ -114,11 +108,6 @@ const displayText = computed(() => {
 
 function isLineActive(line: { begin_ms: number; end_ms: number | null }) {
   return currentLines.value.some((active) => active === line);
-}
-
-function wordProgress(word: LyricWord) {
-  const duration = Math.max(1, word.end_ms - word.begin_ms);
-  return Math.max(0, Math.min(1, (props.positionMs - word.begin_ms) / duration));
 }
 
 </script>

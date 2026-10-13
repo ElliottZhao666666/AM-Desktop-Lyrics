@@ -12,7 +12,7 @@ if (process.argv.includes('--write-default-theme')) {
   process.exit(0);
 }
 
-function component(file, names, commands, label, props = {}) {
+function component(file, names, commands, label, props = {}, performanceClock = { now: () => 0 }) {
   let mounted;
   const events = new Map();
   const source = fs.readFileSync(path.join(root, file), 'utf8').match(/<script setup lang="ts">([\s\S]*?)<\/script>/)[1];
@@ -20,6 +20,7 @@ function component(file, names, commands, label, props = {}) {
   const requireBoundary = (name) => {
     if (name === 'vue') return { ...vue, onMounted(fn) { mounted = fn; }, onUnmounted() {} };
     if (name === '../theme') return theme;
+    if (name === './playback-clock') return tsModule('src/playback-clock.ts');
     if (name.startsWith('@tauri-apps/')) return {
       getCurrentWindow: () => ({ label, hide: async () => {} }),
       message: async () => {},
@@ -33,8 +34,14 @@ function component(file, names, commands, label, props = {}) {
     return {};
   };
   const style = { textContent: '' };
-  const exposed = new Function('require', 'exports', '__APP_VERSION__', 'performance', 'document', 'requestAnimationFrame', 'defineProps', js + '\nreturn {' + names.join(',') + '};')(requireBoundary, {}, 'test', { now: () => 0 }, { querySelector: () => style }, () => 1, () => props);
+  const exposed = new Function('require', 'exports', '__APP_VERSION__', 'performance', 'document', 'requestAnimationFrame', 'defineProps', js + '\nreturn {' + names.join(',') + '};')(requireBoundary, {}, 'test', performanceClock, { querySelector: () => style }, () => 1, () => props);
   return { ...exposed, mount: () => mounted?.(), event: (name, payload) => events.get(name)({ payload }) };
+}
+
+function tsModule(file) {
+  const exports = {};
+  new Function('exports', ts.transpileModule(fs.readFileSync(path.join(root, file), 'utf8'), {compilerOptions:{module:ts.ModuleKind.CommonJS,target:ts.ScriptTarget.ES2020}}).outputText)(exports);
+  return exports;
 }
 
 const track = { title: 'A', artist: 'Artist', album: 'Album' };
@@ -168,13 +175,53 @@ const settings = { ...theme.DEFAULT_EDITOR, themeCss: '.amdl-lyrics {}', themeNa
   console.log('通过：切歌后的旧搜索不会回填，旧预览完成不会清掉新预览的忙碌状态。');
 
   const props = vue.reactive({title:'A',artist:'Artist',isPlaying:true,positionMs:1500,durationMs:5000,lyrics:structuredClone(document),lyricsState:'loaded',lyricsMessage:null});
-  const board = component('src/components/LyricsBoard.vue', ['currentLines','displayLines','displayMode','wordProgress'], {}, 'main', props);
+  const board = component('src/components/LyricsBoard.vue', ['currentLines','displayLines','displayMode'], {}, 'main', props);
   assert.equal(board.currentLines.value.length, 1);
   props.positionMs = 2500;
   assert.equal(board.displayMode.value, 'outro'); assert.equal(board.displayLines.value.length, 0);
   props.lyrics.lines = [{begin_ms:1000,end_ms:null,text:'A',words:[]},{begin_ms:1000,end_ms:2500,text:'B',words:[]},{begin_ms:3000,end_ms:null,text:'C',words:[]}];
   props.positionMs = 2000; assert.equal(board.currentLines.value.length, 2);
   props.positionMs = 5000; assert.equal(board.displayMode.value, 'outro');
-  assert.equal(board.wordProgress({begin_ms:1000,end_ms:2000}), 1);
+  assert.equal(tsModule('src/karaoke.ts').wordProgress({begin_ms:1000,end_ms:2000},5000), 1);
   console.log('通过：重叠行和缺失结束时间可定位，最终结束后不残留最后一行。');
+
+  const {PlaybackClock} = tsModule('src/playback-clock.ts');
+  const clock = new PlaybackClock(); clock.reset(0); clock.setPlaying(true,0); clock.sync(10000,200000,1,0);
+  let previous = clock.tick(0);
+  for (let now = 16; now <= 20000; now += 16) {
+    if (now % 400 === 0) {
+      const before = clock.tick(now);
+      const after = clock.sync(10000+now+(now%800===0 ? -450 : 450),200000,1,now);
+      assert.equal(after,before,'校准事件不能跳变显示位置');
+    }
+    const current = clock.tick(now);
+    assert.ok(current>=previous,'普通播放每帧不得倒退');
+    assert.ok(current-previous<=19.3,'普通校正不能突跳'); previous=current;
+  }
+  clock.sync(3000,200000,1,20000,true); assert.equal(clock.tick(20000),3000);
+  clock.setPlaying(false,20500); const paused=clock.tick(20500); assert.equal(clock.tick(25500),paused);
+  clock.setPlaying(true,25500); assert.ok(Math.abs(clock.tick(26500)-paused-1000)<201);
+  clock.sync(50000,200000,2,26500,true); assert.equal(clock.tick(27000),51000);
+  console.log('通过：抖动样本仅调速、每帧不倒退，真实 seek、暂停恢复和倍速仍正确。');
+  let now=0;
+  const clockApp=component('src/App.vue',['applyMediaState','applyAuthoritativePosition','updateInterpolatedPosition','positionMs'],{},'main',{}, {now:()=>now});
+  clockApp.applyMediaState(snapshot.media);
+  clockApp.applyAuthoritativePosition({...snapshot.position,timeline_revision:1});
+  now=1000;clockApp.updateInterpolatedPosition(now);assert.equal(clockApp.positionMs.value,11000);
+  clockApp.applyAuthoritativePosition({...snapshot.position,position_ms:3000,revision:5,timeline_revision:2,discontinuity:false});
+  assert.equal(clockApp.positionMs.value,3000,'漏过 seek 事件也能通过持续的位置版本重定位');
+  now=2000;clockApp.updateInterpolatedPosition(now);assert.equal(clockApp.positionMs.value,4000);
+  clockApp.applyAuthoritativePosition({...snapshot.position,position_ms:3000,revision:5,timeline_revision:2,discontinuity:true});
+  assert.equal(clockApp.positionMs.value,4000,'重复快照不能再次倒退');
+
+  const {karaokeMasks} = tsModule('src/karaoke.ts');
+  const words=[{text:'A',begin_ms:0,end_ms:1000},{text:'long',begin_ms:1000,end_ms:2000}];
+  const geometry={width:110,height:40,padding:0,words:[[{x:0,y:0,width:10,height:40}],[{x:10,y:0,width:100,height:40}]]};
+  const half=karaokeMasks(words,geometry,1500);
+  assert.equal(half.extent,60,'边界使用实际词宽而非字数'); assert.equal(half.active,'M0 0h60v40h-60Z');
+  assert.equal(karaokeMasks(words,geometry,0).extent,0);
+  assert.equal(karaokeMasks(words,geometry,3000).extent,110);
+  const wrapped=karaokeMasks([words[1]],{width:60,height:80,padding:0,words:[[{x:0,y:0,width:60,height:40},{x:0,y:40,width:40,height:40}]]},1500);
+  assert.equal(wrapped.active,'M0 0h50v40h-50Z');
+  console.log('通过：整行共用渐变范围，遮罩按真实宽度处理英文长词、换行和正常字形补集。');
 })().catch((error) => { console.error(error); process.exitCode = 1; });

@@ -63,6 +63,7 @@ import type {
   MediaStatePayload,
   RuntimeLyricsTimeOffset,
 } from './types';
+import { PlaybackClock } from './playback-clock';
 
 const currentWindowLabel = getCurrentWindow().label;
 const isSettingsWindow = currentWindowLabel === 'settings';
@@ -78,8 +79,9 @@ let mediaAlbum: string | null = null;
 let currentTrackRevision = -1;
 let lastMediaRevision = -1;
 let lastPositionRevision = -1;
+let lastTimelineRevision: number | null = null;
 let lastLyricsRevision = -1;
-let playbackRate = 1;
+const playbackClock = new PlaybackClock();
 const isPlaying = ref(false);
 const positionMs = ref(0);
 const durationMs = ref(0);
@@ -98,10 +100,6 @@ let animationFrameId: number | null = null;
 let unlistenLockState: UnlistenFn | null = null;
 let unlistenSettings: UnlistenFn | null = null;
 let unlistenLyricsTimeOffset: UnlistenFn | null = null;
-let clockAnchorPositionMs = 0;
-let clockAnchorTime = performance.now();
-
-const CLOCK_SNAP_THRESHOLD_MS = 300;
 const displayPositionMs = computed(() => {
   const adjusted = positionMs.value - lyricsTimeOffsetMs.value;
   return Math.max(0, durationMs.value > 0 ? Math.min(adjusted, durationMs.value) : adjusted);
@@ -151,31 +149,21 @@ function applyLyricsTimeOffset(payload: RuntimeLyricsTimeOffset) {
   lyricsTimeOffsetMs.value = payload.offsetMs;
 }
 
-function interpolatedPosition(now = performance.now()) {
-  const elapsed = isPlaying.value ? Math.max(0, now - clockAnchorTime) * playbackRate : 0;
-  const estimated = clockAnchorPositionMs + elapsed;
-  return durationMs.value > 0 ? Math.min(estimated, durationMs.value) : estimated;
-}
-
 function applyAuthoritativePosition(payload: MediaPositionPayload) {
-  if (payload.track_revision !== currentTrackRevision || payload.revision < lastPositionRevision) return;
+  if (payload.track_revision !== currentTrackRevision || payload.revision <= lastPositionRevision) return;
   lastPositionRevision = payload.revision;
   const now = performance.now();
-  const predicted = interpolatedPosition(now);
-  const drift = payload.position_ms - predicted;
-  const corrected = isPlaying.value && Math.abs(drift) <= CLOCK_SNAP_THRESHOLD_MS
-    ? predicted + drift * 0.35
-    : payload.position_ms;
-
   durationMs.value = payload.duration_ms;
-  playbackRate = payload.playback_rate;
-  clockAnchorPositionMs = Math.max(0, corrected);
-  clockAnchorTime = now;
-  positionMs.value = clockAnchorPositionMs;
+  // Rust 的位置是在发出事件时估算的，补偿 IPC 排队时间；逐帧推进仍用 performance.now。
+  const age = payload.sampled_at_ms ? Math.max(0, Math.min(2000, Date.now() - payload.sampled_at_ms)) : 0;
+  const rate = Number.isFinite(payload.playback_rate) ? payload.playback_rate : 1;
+  const reanchor = payload.discontinuity || (payload.timeline_revision !== undefined && payload.timeline_revision !== lastTimelineRevision);
+  if (payload.timeline_revision !== undefined) lastTimelineRevision = payload.timeline_revision;
+  positionMs.value = playbackClock.sync(payload.position_ms + (isPlaying.value ? age * rate : 0), payload.duration_ms, rate, now, reanchor);
 }
 
 function updateInterpolatedPosition(now: number) {
-  if (isPlaying.value) positionMs.value = interpolatedPosition(now);
+  if (isPlaying.value) positionMs.value = playbackClock.tick(now);
   animationFrameId = requestAnimationFrame(updateInterpolatedPosition);
 }
 
@@ -188,8 +176,8 @@ function clearLyricsForTrackChange(now: number) {
   lyricsMessage.value = null;
   positionMs.value = 0;
   durationMs.value = 0;
-  clockAnchorPositionMs = 0;
-  clockAnchorTime = now;
+  playbackClock.reset(now);
+  lastTimelineRevision = null;
 }
 
 function applyMediaState(payload: MediaStatePayload) {
@@ -201,11 +189,9 @@ function applyMediaState(payload: MediaStatePayload) {
   if (trackChanged) {
     // 先同步清空上一首歌词，再发布新曲目信息，避免请求期间脏读。
     clearLyricsForTrackChange(now);
-  } else if (nextIsPlaying !== isPlaying.value) {
-    clockAnchorPositionMs = interpolatedPosition(now);
-    clockAnchorTime = now;
-    positionMs.value = clockAnchorPositionMs;
   }
+  playbackClock.setPlaying(nextIsPlaying, now);
+  if (!trackChanged) positionMs.value = playbackClock.tick(now);
 
   mediaTitle.value = payload.track.title;
   mediaArtist.value = payload.track.artist;
