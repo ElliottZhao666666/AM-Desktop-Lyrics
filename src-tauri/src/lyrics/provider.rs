@@ -1,163 +1,398 @@
-use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::Mutex;
-use std::time::SystemTime;
-use tauri::{AppHandle, Emitter};
-
 use crate::domain::{LyricsDocument, LyricsLoadState, LyricsStatusPayload, TrackIdentity};
-use crate::lyrics::cache;
-use crate::lyrics::cache_scanner;
-use crate::lyrics::custom_pool;
-use crate::lyrics::qq_music;
 use crate::lyrics::qq_music::{QqLyricsPreview, QqSongCandidate};
 use crate::lyrics::ttml_parser::parse_ttml as parse_api_ttml;
+use crate::lyrics::{cache, custom_pool, qq_music};
+use std::sync::Mutex;
+use std::time::{Duration, Instant, SystemTime};
+use tauri::AppHandle;
 
-static LYRICS_REQUEST_GENERATION: AtomicU64 = AtomicU64::new(0);
-static LAST_REQUESTED_TRACK: Mutex<Option<TrackIdentity>> = Mutex::new(None);
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct RequestToken {
+    generation: u64,
+    track_revision: u64,
+}
+struct RequestState {
+    generation: u64,
+    track: Option<TrackIdentity>,
+    track_revision: u64,
+    duration_ms: u64,
+    task: Option<tauri::async_runtime::JoinHandle<()>>,
+    retry_at: Option<Instant>,
+}
+static REQUESTS: Mutex<RequestState> = Mutex::new(RequestState {
+    generation: 0,
+    track: None,
+    track_revision: 0,
+    duration_ms: 0,
+    task: None,
+    retry_at: None,
+});
 const LOCAL_CACHE_LIMIT: usize = 50;
 static LOCAL_LYRICS_CACHE: Mutex<Option<Vec<LyricsDocument>>> = Mutex::new(None);
 
 pub fn enter_waiting_state() {
-    LYRICS_REQUEST_GENERATION.fetch_add(1, Ordering::SeqCst);
-    if let Ok(mut last_track) = LAST_REQUESTED_TRACK.lock() {
-        *last_track = None;
+    if let Ok(mut state) = REQUESTS.lock() {
+        state.generation += 1;
+        state.track = None;
+        state.retry_at = None;
+        if let Some(task) = state.task.take() {
+            task.abort();
+        }
     }
 }
 
-/// 搜索、下载、解析并发送歌词；旧请求返回后会因 generation 校验而丢弃。
-pub fn fetch_and_emit_lyrics(track: TrackIdentity, app_handle: AppHandle, target_duration_ms: u64) {
-    if let Ok(mut last_track) = LAST_REQUESTED_TRACK.lock() {
-        if last_track.as_ref() == Some(&track) {
-            return;
-        }
-        *last_track = Some(track.clone());
+fn begin_request(
+    track: &TrackIdentity,
+    track_revision: u64,
+    duration_ms: u64,
+    force: bool,
+) -> Option<RequestToken> {
+    let mut state = REQUESTS.lock().ok()?;
+    let snapshot = crate::playback::snapshot().ok()?;
+    if snapshot.media.track_revision != track_revision || snapshot.media.track != *track {
+        return None;
     }
-    let generation = LYRICS_REQUEST_GENERATION.fetch_add(1, Ordering::SeqCst) + 1;
-    let requested_at = SystemTime::now();
-    let title = track.title.clone();
-    let artist = track.artist.clone();
-    emit_status(&app_handle, &track, LyricsLoadState::Loading, None);
+    let same = state.track.as_ref() == Some(track) && state.track_revision == track_revision;
+    let improved_duration = (state.duration_ms == 0 && duration_ms > 0)
+        || (state.duration_ms > 0
+            && duration_ms > 0
+            && state.duration_ms.abs_diff(duration_ms) > 1000);
+    if !force
+        && same
+        && !improved_duration
+        && state
+            .retry_at
+            .is_none_or(|deadline| Instant::now() < deadline)
+    {
+        return None;
+    }
+    if let Some(task) = state.task.take() {
+        task.abort();
+    }
+    state.generation += 1;
+    state.track = Some(track.clone());
+    state.track_revision = track_revision;
+    state.duration_ms = duration_ms;
+    state.retry_at = None;
+    Some(RequestToken {
+        generation: state.generation,
+        track_revision,
+    })
+}
 
-    // 使用 tauri 提供的全局 tokio runtime 来派发异步任务，
-    // 因为此函数可能是从 Windows COM 的 RPC 回调线程中调用的（该线程没有 tokio 上下文）
-    tauri::async_runtime::spawn(async move {
-        if LYRICS_REQUEST_GENERATION.load(Ordering::SeqCst) != generation {
-            println!("[Lyrics] 丢弃过期搜索结果: {} - {}", title, artist);
-            return;
+pub fn fetch_and_emit_lyrics(
+    track: TrackIdentity,
+    app: AppHandle,
+    duration_ms: u64,
+    track_revision: u64,
+) {
+    start_fetch(track, app, duration_ms, track_revision, false);
+}
+
+pub fn refresh_current_lyrics(app: AppHandle) {
+    if let Ok(snapshot) = crate::playback::snapshot() {
+        if validate_track(&snapshot.media.track).is_ok() {
+            start_fetch(
+                snapshot.media.track,
+                app,
+                snapshot.position.duration_ms,
+                snapshot.media.track_revision,
+                true,
+            );
         }
+    }
+}
 
-        match custom_pool::get(&track) {
+fn start_fetch(
+    track: TrackIdentity,
+    app: AppHandle,
+    duration_ms: u64,
+    track_revision: u64,
+    force: bool,
+) {
+    let Some(token) = begin_request(&track, track_revision, duration_ms, force) else {
+        return;
+    };
+    publish_status(&app, &track, LyricsLoadState::Loading, None, token);
+    let task = tauri::async_runtime::spawn(async move {
+        let result = fetch_document(&track, duration_ms, SystemTime::now()).await;
+        match result {
             Ok(Some(document)) => {
-                println!("[CustomLyrics] 命中永久自定义歌词: track={track:?}");
-                if LYRICS_REQUEST_GENERATION.load(Ordering::SeqCst) == generation {
-                    emit_loaded(&app_handle, &document);
-                }
-                return;
+                finish_loaded(&app, &document, token);
             }
-            Ok(None) => {}
-            Err(error) => eprintln!("[CustomLyrics] 读取永久自定义歌词失败，继续自动匹配: {error}"),
-        }
-
-        let app_config = crate::config::read_config().unwrap_or_default().normalize();
-        let api_enabled = app_config.source_enabled("appleMusicApi");
-        let cache_enabled = app_config.source_enabled("appleMusicCache");
-        let qq_enabled = app_config.source_enabled("qqMusic");
-        let mut channel_order = Vec::new();
-        if api_enabled { channel_order.push((source_priority(&app_config, "appleMusicApi"), "appleMusicApi")); }
-        if cache_enabled { channel_order.push((source_priority(&app_config, "appleMusicCache"), "appleMusicCache")); }
-        if qq_enabled { channel_order.push((source_priority(&app_config, "qqMusic"), "qqMusic")); }
-        channel_order.sort_by_key(|(priority, _)| *priority);
-        println!("[Lyrics] 渠道配置: api={}, cache={}, qq={}", api_enabled, cache_enabled, qq_enabled);
-        if let Some(document) = local_cache_get(&track, &app_config) {
-            println!("[LyricsCache] 命中自身缓存: track={track:?}");
-            if LYRICS_REQUEST_GENERATION.load(Ordering::SeqCst) == generation {
-                emit_loaded(&app_handle, &document);
-            }
-            return;
-        }
-        println!("[Lyrics] 渠道配置: api_enabled={}, cache_enabled={}, qq_enabled={}, target_duration_ms={}", api_enabled, cache_enabled, qq_enabled, target_duration_ms);
-        if !api_enabled && !cache_enabled && !qq_enabled {
-            emit_status(&app_handle, &track, LyricsLoadState::NotFound, Some("已禁用所有自动歌词渠道".to_string()));
-            return;
-        }
-        let mut document = None;
-        for (priority, channel) in channel_order {
-            println!("[Lyrics] 尝试渠道 {channel}, priority={priority}");
-            let result = match channel {
-                "appleMusicApi" => fetch_apple_music_api(&track, target_duration_ms, &app_config).await,
-                "appleMusicCache" => {
-                    let cache_track = track.clone();
-                    match tauri::async_runtime::spawn_blocking(move || cache::fetch_lyrics(&cache_track, requested_at)).await {
-                        Ok(Ok(value)) => value,
-                        Ok(Err(error)) => { eprintln!("[Lyrics] Apple Music 缓存读取失败: {error}"); None }
-                        Err(error) => { eprintln!("[Lyrics] 缓存读取任务失败: {error}"); None }
-                    }
-                }
-                "qqMusic" => match qq_music::fetch_lyrics(&track).await {
-                    Ok(value) => value,
-                    Err(error) => { eprintln!("[Lyrics] QQ 音乐请求失败: {error}"); None }
-                }
-                _ => None,
-            };
-            if result.is_some() { document = result; break; }
-        }
-        let Some(document) = document else {
-            emit_status(&app_handle, &track, LyricsLoadState::NotFound, Some("所有歌词源均未找到匹配歌词".to_string()));
-            return;
-        };
-        if is_current_generation(generation) {
-            local_cache_put(&document);
-            emit_loaded(&app_handle, &document);
+            Ok(None) => publish_status(
+                &app,
+                &track,
+                LyricsLoadState::NotFound,
+                Some("所有歌词源均未找到可信匹配歌词".into()),
+                token,
+            ),
+            Err(error) => publish_status(&app, &track, LyricsLoadState::Error, Some(error), token),
         }
     });
+    if let Ok(mut state) = REQUESTS.lock() {
+        if state.generation == token.generation {
+            state.task = Some(task);
+        } else {
+            task.abort();
+        }
+    }
 }
 
-fn source_priority(config: &crate::config::AppConfig, id: &str) -> u32 {
-    config.lyrics_sources.iter().find(|source| source.id == id).map(|source| source.priority).unwrap_or(u32::MAX)
+async fn fetch_document(
+    track: &TrackIdentity,
+    duration_ms: u64,
+    requested_at: SystemTime,
+) -> Result<Option<LyricsDocument>, String> {
+    match custom_pool::get(track) {
+        Ok(Some(document)) => return Ok(Some(document)),
+        Ok(None) => {}
+        Err(error) => eprintln!("[CustomLyrics] 读取失败，继续自动匹配: {error}"),
+    }
+    let config = crate::config::read_config()?.normalize();
+    if let Some(document) = local_cache_get(track, &config, duration_ms) {
+        return Ok(Some(document));
+    }
+    let mut channels = config
+        .lyrics_sources
+        .iter()
+        .filter(|source| {
+            source.enabled
+                && matches!(
+                    source.id.as_str(),
+                    "appleMusicApi" | "appleMusicCache" | "qqMusic"
+                )
+        })
+        .collect::<Vec<_>>();
+    channels.sort_by_key(|source| source.priority);
+    let mut verified_cache: Option<Option<cache::VerifiedCache>> = None;
+    let mut errors = Vec::new();
+    for source in channels {
+        let result = match source.id.as_str() {
+            "appleMusicApi" | "appleMusicCache" => {
+                if verified_cache.is_none() {
+                    verified_cache = Some(
+                        match cache::fetch_lyrics(track, requested_at, duration_ms, &config).await {
+                            Ok(candidate) => candidate,
+                            Err(error) => {
+                                errors.push(error);
+                                None
+                            }
+                        },
+                    );
+                }
+                match verified_cache.as_ref().and_then(Option::as_ref) {
+                    Some(candidate) if source.id == "appleMusicApi" => {
+                        fetch_apple_music_api(track, candidate, &config).await
+                    }
+                    Some(candidate) => Ok(Some(candidate.document.clone())),
+                    None => Ok(None),
+                }
+            }
+            "qqMusic" => qq_music::fetch_matched_lyrics(track, duration_ms)
+                .await
+                .map_err(|error| format!("QQ 音乐获取失败: {error}")),
+            _ => Ok(None),
+        };
+        match result {
+            Ok(Some(document)) => return Ok(Some(document)),
+            Ok(None) => {}
+            Err(error) => {
+                eprintln!("[Lyrics] {error}");
+                errors.push(error);
+            }
+        }
+    }
+    if errors.is_empty() {
+        Ok(None)
+    } else {
+        Err(errors.join("；"))
+    }
 }
 
 async fn fetch_apple_music_api(
     track: &TrackIdentity,
-    target_duration_ms: u64,
+    candidate: &cache::VerifiedCache,
     config: &crate::config::AppConfig,
-) -> Option<LyricsDocument> {
-    if !config.source_enabled("appleMusicApi") { return None; }
-    println!("[Lyrics] 优先尝试 Apple Music Web API: 先从缓存提取真实 Track ID");
-    if target_duration_ms == 0 {
-        println!("[Lyrics] 跳过 Apple Music Web API: SMTC 未提供有效歌曲时长");
-        return None;
+) -> Result<Option<LyricsDocument>, String> {
+    let body = crate::lyrics::am_api::fetch_syllable_lyrics(
+        &candidate.track_id,
+        config.auto_chs,
+        config.am_api_tokens.clone(),
+    )
+    .await
+    .map_err(|error| error.to_string())?;
+    let Some(ttml) = extract_ttml(&body) else {
+        return Ok(None);
+    };
+    if crate::lyrics::cache_scanner::body_duration_ms(&ttml)
+        .zip(candidate.document.duration_ms)
+        .is_some_and(|(api_duration, cache_duration)| {
+            api_duration.abs_diff(cache_duration) > crate::lyrics::cache_scanner::MATCH_TOLERANCE_MS
+        })
+    {
+        return Err("逐字歌词响应与已核验歌曲时长不符".into());
     }
-    let track_id = match cache_scanner::find_target_cache(target_duration_ms) {
-        Ok(Some(id)) => id,
-        Ok(None) => { println!("[Lyrics] 未能从缓存提取真实 Track ID，跳过 Apple Music Web API"); return None; }
-        Err(error) => { eprintln!("[Lyrics] 缓存扫描失败: {error}"); return None; }
-    };
-    println!("[Lyrics] 已提取 Track ID={track_id}，开始请求 Apple Music syllable-lyrics");
-    let body = match crate::lyrics::am_api::fetch_syllable_lyrics(&track_id, config.auto_chs, config.am_api_tokens.clone()).await {
-        Ok(body) => body,
-        Err(error) => { eprintln!("[Lyrics] Apple Music Web API 请求失败: {error}"); return None; }
-    };
-    let ttml = extract_ttml(&body)?;
-    let lines = parse_api_ttml(&ttml).ok()?.into_iter().map(|line| crate::domain::LyricLine {
-        begin_ms: line.begin.round() as u64,
-        end_ms: line.end.map(|value| value.round() as u64),
-        text: line.text,
-        words: line.words.unwrap_or_default().into_iter().map(|word| crate::domain::LyricWord { text: word.text, begin_ms: word.begin.round() as u64, end_ms: word.end.round() as u64 }).collect(),
-    }).collect::<Vec<_>>();
-    if lines.is_empty() { return None; }
-    let document = LyricsDocument { track: track.clone(), source: crate::domain::LyricsSource::AppleMusicApi, lines, duration_ms: None };
-    Some(document)
+    let lines = parse_api_ttml(&ttml)
+        .map_err(|error| error.to_string())?
+        .into_iter()
+        .map(|line| crate::domain::LyricLine {
+            begin_ms: line.begin.round() as u64,
+            end_ms: line.end.map(|end| end.round() as u64),
+            text: line.text,
+            words: line
+                .words
+                .unwrap_or_default()
+                .into_iter()
+                .map(|word| crate::domain::LyricWord {
+                    text: word.text,
+                    begin_ms: word.begin.round() as u64,
+                    end_ms: word.end.round() as u64,
+                })
+                .collect(),
+        })
+        .collect::<Vec<_>>();
+    if lines.is_empty() {
+        return Ok(None);
+    }
+    Ok(Some(LyricsDocument {
+        track: track.clone(),
+        source: crate::domain::LyricsSource::AppleMusicApi,
+        lines,
+        duration_ms: candidate.document.duration_ms,
+    }))
 }
 
 fn extract_ttml(body: &str) -> Option<String> {
     fn visit(value: &serde_json::Value) -> Option<String> {
         match value {
-            serde_json::Value::String(text) if text.contains("<tt") && text.contains("<body") => Some(text.clone()),
+            serde_json::Value::String(text) if text.contains("<tt") && text.contains("<body") => {
+                Some(text.clone())
+            }
             serde_json::Value::Object(map) => map.values().find_map(visit),
             serde_json::Value::Array(items) => items.iter().find_map(visit),
             _ => None,
         }
     }
-    serde_json::from_str(body).ok().and_then(|value| visit(&value))
+    serde_json::from_str(body)
+        .ok()
+        .and_then(|value| visit(&value))
+}
+
+fn publish_status(
+    app: &AppHandle,
+    track: &TrackIdentity,
+    status: LyricsLoadState,
+    message: Option<String>,
+    token: RequestToken,
+) {
+    let Ok(mut state) = REQUESTS.lock() else {
+        return;
+    };
+    if state.generation != token.generation {
+        return;
+    }
+    if matches!(status, LyricsLoadState::NotFound | LyricsLoadState::Error) {
+        state.retry_at = Some(Instant::now() + Duration::from_secs(15));
+    }
+    crate::playback::update_lyrics(
+        app,
+        token.track_revision,
+        LyricsStatusPayload {
+            track: track.clone(),
+            state: status,
+            message,
+        },
+        None,
+    );
+}
+
+fn finish_loaded(app: &AppHandle, document: &LyricsDocument, token: RequestToken) -> bool {
+    let Ok(mut state) = REQUESTS.lock() else {
+        return false;
+    };
+    if state.generation != token.generation {
+        return false;
+    }
+    if crate::playback::update_lyrics(
+        app,
+        token.track_revision,
+        LyricsStatusPayload {
+            track: document.track.clone(),
+            state: LyricsLoadState::Loaded,
+            message: None,
+        },
+        Some(document.clone()),
+    ) {
+        state.retry_at = None;
+        local_cache_put(document);
+        true
+    } else {
+        false
+    }
+}
+
+fn begin_forced_request(
+    track: &TrackIdentity,
+    app: &AppHandle,
+) -> Result<(RequestToken, u64), String> {
+    validate_track(track)?;
+    let snapshot = crate::playback::snapshot()?;
+    if snapshot.media.track != *track {
+        return Err("曲目已改变，请重新匹配当前曲目".into());
+    }
+    let token = begin_request(
+        track,
+        snapshot.media.track_revision,
+        snapshot.position.duration_ms,
+        true,
+    )
+    .ok_or("歌词请求锁已损坏")?;
+    publish_status(app, track, LyricsLoadState::Loading, None, token);
+    Ok((token, snapshot.position.duration_ms))
+}
+
+fn finish_forced(
+    app: &AppHandle,
+    track: &TrackIdentity,
+    token: RequestToken,
+    result: Result<Option<LyricsDocument>, String>,
+) -> Result<bool, String> {
+    match result {
+        Ok(Some(document)) => Ok(finish_loaded(app, &document, token)),
+        Ok(None) => {
+            publish_status(
+                app,
+                track,
+                LyricsLoadState::NotFound,
+                Some("未找到可信匹配歌词".into()),
+                token,
+            );
+            Ok(false)
+        }
+        Err(error) => {
+            publish_status(
+                app,
+                track,
+                LyricsLoadState::Error,
+                Some(error.clone()),
+                token,
+            );
+            Err(error)
+        }
+    }
+}
+
+fn validate_track(track: &TrackIdentity) -> Result<(), String> {
+    if track.title.trim().is_empty()
+        || track.artist.trim().is_empty()
+        || track.title.contains("正在连接")
+        || track.title.starts_with("等待")
+    {
+        Err("当前没有可匹配的播放曲目".into())
+    } else {
+        Ok(())
+    }
 }
 
 #[tauri::command]
@@ -167,157 +402,90 @@ pub async fn search_qq_lyrics(track: TrackIdentity) -> Result<Vec<QqSongCandidat
         .await
         .map_err(|error| format!("搜索 Q音歌曲失败: {error}"))
 }
-
 #[tauri::command]
 pub async fn preview_qq_lyrics(candidate: QqSongCandidate) -> Result<QqLyricsPreview, String> {
     qq_music::preview_lyrics(candidate)
         .await
-        .map_err(|error| format!("获取 Q音歌词预览失败: {error}"))?
-        .ok_or_else(|| "此歌曲没有可用的时间轴歌词".to_string())
+        .map_err(|error| error.to_string())?
+        .ok_or_else(|| "此歌曲没有可用的时间轴歌词".into())
 }
-
 #[tauri::command]
 pub async fn rescan_local_lyrics(app: AppHandle, track: TrackIdentity) -> Result<bool, String> {
-    validate_track(&track)?;
-    if !crate::config::read_config().unwrap_or_default().normalize().source_enabled("appleMusicCache") {
-        return Err("Apple Music 本地缓存渠道已禁用".to_string());
+    let config = crate::config::read_config()?.normalize();
+    if !config.source_enabled("appleMusicCache") {
+        return Err("Apple Music 本地缓存渠道已禁用".into());
     }
-    let generation = begin_forced_request(&track, &app);
-    let requested_at = SystemTime::now();
-    let cache_track = track.clone();
-    let document = tauri::async_runtime::spawn_blocking(move || {
-        cache::fetch_lyrics(&cache_track, requested_at)
-    })
-    .await
-    .map_err(|error| format!("本地缓存扫描任务失败: {error}"))?
-    .map_err(|error| format!("扫描 Apple Music 本地缓存失败: {error}"))?;
-    if !is_current_generation(generation) {
-        return Ok(false);
-    }
-    if let Some(document) = document {
-        local_cache_put(&document);
-        emit_loaded(&app, &document);
-        Ok(true)
-    } else {
-        emit_status(
-            &app,
-            &track,
-            LyricsLoadState::NotFound,
-            Some("Apple Music 本地缓存中没有找到当前歌曲歌词".to_string()),
-        );
-        Ok(false)
-    }
+    let (token, duration) = begin_forced_request(&track, &app)?;
+    let result = cache::fetch_lyrics(&track, SystemTime::now(), duration, &config)
+        .await
+        .map(|candidate| candidate.map(|candidate| candidate.document));
+    finish_forced(&app, &track, token, result)
 }
-
 #[tauri::command]
 pub async fn refetch_qq_lyrics(app: AppHandle, track: TrackIdentity) -> Result<bool, String> {
-    validate_track(&track)?;
-    if !crate::config::read_config().unwrap_or_default().normalize().source_enabled("qqMusic") {
-        return Err("QQ 音乐渠道已禁用".to_string());
+    if !crate::config::read_config()?
+        .normalize()
+        .source_enabled("qqMusic")
+    {
+        return Err("QQ 音乐渠道已禁用".into());
     }
-    let generation = begin_forced_request(&track, &app);
-    let document = qq_music::fetch_lyrics(&track)
+    let (token, duration) = begin_forced_request(&track, &app)?;
+    let result = qq_music::fetch_matched_lyrics(&track, duration)
         .await
-        .map_err(|error| format!("重新获取 Q音歌词失败: {error}"))?;
-    if !is_current_generation(generation) {
-        return Ok(false);
-    }
-    if let Some(document) = document {
-        local_cache_put(&document);
-        emit_loaded(&app, &document);
-        Ok(true)
-    } else {
-        emit_status(
-            &app,
-            &track,
-            LyricsLoadState::NotFound,
-            Some("Q音没有找到匹配歌词".to_string()),
-        );
-        Ok(false)
-    }
+        .map_err(|error| error.to_string());
+    finish_forced(&app, &track, token, result)
 }
-
 #[tauri::command]
 pub async fn apply_manual_lyrics(
     app: AppHandle,
     track: TrackIdentity,
     candidate: QqSongCandidate,
 ) -> Result<(), String> {
-    validate_track(&track)?;
-    if !crate::config::read_config().unwrap_or_default().normalize().source_enabled("manual") {
-        return Err("手动匹配渠道已禁用".to_string());
+    if !crate::config::read_config()?
+        .normalize()
+        .source_enabled("manual")
+    {
+        return Err("手动匹配渠道已禁用".into());
     }
-    let generation = begin_forced_request(&track, &app);
-    let document = qq_music::fetch_lyrics_by_song(&track, &candidate)
-        .await
-        .map_err(|error| format!("获取选定歌词失败: {error}"))?
-        .ok_or_else(|| "选定歌曲没有可用的时间轴歌词".to_string())?;
-    if !is_current_generation(generation) {
-        return Err("歌词请求已过期，请重新应用当前曲目".to_string());
-    }
-    local_cache_put(&document);
-    emit_loaded(&app, &document);
-    println!("[ManualLyrics] 已应用并覆盖普通缓存: track={track:?}");
-    Ok(())
+    apply_selected(app, track, candidate, false).await
 }
-
 #[tauri::command]
 pub async fn apply_custom_lyrics(
     app: AppHandle,
     track: TrackIdentity,
     candidate: QqSongCandidate,
 ) -> Result<(), String> {
-    validate_track(&track)?;
-    let generation = begin_forced_request(&track, &app);
-    let document = qq_music::fetch_lyrics_by_song(&track, &candidate)
+    apply_selected(app, track, candidate, true).await
+}
+async fn apply_selected(
+    app: AppHandle,
+    track: TrackIdentity,
+    candidate: QqSongCandidate,
+    permanent: bool,
+) -> Result<(), String> {
+    let (token, _) = begin_forced_request(&track, &app)?;
+    let result = qq_music::fetch_lyrics_by_song(&track, &candidate)
         .await
-        .map_err(|error| format!("获取选定歌词失败: {error}"))?
-        .ok_or_else(|| "选定歌曲没有可用的时间轴歌词".to_string())?;
-    if !is_current_generation(generation) {
-        return Err("歌词请求已过期，请重新应用当前曲目".to_string());
-    }
-    custom_pool::save(&track, candidate, document.clone())?;
-    local_cache_put(&document);
-    emit_loaded(&app, &document);
-    println!("[CustomLyrics] 已保存永久绑定: track={track:?}");
-    Ok(())
-}
-
-fn begin_forced_request(track: &TrackIdentity, app: &AppHandle) -> u64 {
-    let generation = LYRICS_REQUEST_GENERATION.fetch_add(1, Ordering::SeqCst) + 1;
-    if let Ok(mut last_track) = LAST_REQUESTED_TRACK.lock() {
-        *last_track = Some(track.clone());
-    }
-    emit_status(app, track, LyricsLoadState::Loading, None);
-    generation
-}
-
-fn is_current_generation(generation: u64) -> bool {
-    LYRICS_REQUEST_GENERATION.load(Ordering::SeqCst) == generation
-}
-
-fn validate_track(track: &TrackIdentity) -> Result<(), String> {
-    if track.title.trim().is_empty()
-        || track.artist.trim().is_empty()
-        || track.title.contains("正在连接")
-        || track.title.starts_with("等待 ")
-    {
-        Err("当前没有可匹配的播放曲目".to_string())
-    } else {
+        .map_err(|error| error.to_string());
+    let result = match result {
+        Ok(Some(document)) if permanent => {
+            let guard = REQUESTS.lock().map_err(|_| "歌词请求锁已损坏")?;
+            if guard.generation != token.generation
+                || crate::playback::snapshot()?.media.track_revision != token.track_revision
+            {
+                return Err("曲目已改变，请重新匹配".into());
+            }
+            custom_pool::save(&track, candidate, document.clone()).map(|_| Some(document))
+        }
+        Ok(None) => Err("选定歌曲没有可用的时间轴歌词".into()),
+        other => other,
+    };
+    if finish_forced(&app, &track, token, result)? {
         Ok(())
-    }
-}
-
-fn emit_loaded(app_handle: &AppHandle, document: &LyricsDocument) {
-    // 推送给前端
-    if let Err(e) = app_handle.emit("lyrics-loaded", document) {
-        eprintln!("[Lyrics] 发送歌词失败: {e}");
     } else {
-        emit_status(app_handle, &document.track, LyricsLoadState::Loaded, None);
-        println!("[Lyrics] {:?} 歌词已发送至前端", document.source);
+        Err("歌词请求已过期".into())
     }
 }
-
 fn local_cache_path() -> Option<std::path::PathBuf> {
     crate::app_paths::lyrics_cache_file().ok()
 }
@@ -351,20 +519,44 @@ fn load_local_cache() -> Vec<LyricsDocument> {
     };
     std::fs::read_to_string(path)
         .ok()
-        .and_then(|text| serde_json::from_str(&text).ok())
+        .and_then(|text| decode_local_cache(&text))
         .unwrap_or_default()
 }
 
-fn local_cache_get(track: &TrackIdentity, config: &crate::config::AppConfig) -> Option<LyricsDocument> {
+#[derive(serde::Serialize, serde::Deserialize)]
+struct VerifiedLyricsCache {
+    match_version: u8,
+    entries: Vec<LyricsDocument>,
+}
+fn decode_local_cache(text: &str) -> Option<Vec<LyricsDocument>> {
+    let cache: VerifiedLyricsCache = serde_json::from_str(text).ok()?;
+    (cache.match_version == crate::lyrics::matching::MATCH_VERSION).then_some(cache.entries)
+}
+
+fn local_cache_get(
+    track: &TrackIdentity,
+    config: &crate::config::AppConfig,
+    duration_ms: u64,
+) -> Option<LyricsDocument> {
     let mut cache = LOCAL_LYRICS_CACHE.lock().ok()?;
     let entries = cache.get_or_insert_with(load_local_cache);
     let index = entries.iter().position(|entry| {
-        entry.track == *track && match entry.source {
-            crate::domain::LyricsSource::AppleMusicApi => config.source_enabled("appleMusicApi"),
-            crate::domain::LyricsSource::AppleMusicCache => config.source_enabled("appleMusicCache"),
-            crate::domain::LyricsSource::QqMusic => config.source_enabled("qqMusic"),
-            _ => true,
-        }
+        entry.track == *track
+            && entry.duration_ms.is_none_or(|duration| {
+                duration_ms == 0
+                    || duration.abs_diff(duration_ms)
+                        <= crate::lyrics::matching::MAX_DURATION_DIFFERENCE_MS
+            })
+            && match entry.source {
+                crate::domain::LyricsSource::AppleMusicApi => {
+                    config.source_enabled("appleMusicApi")
+                }
+                crate::domain::LyricsSource::AppleMusicCache => {
+                    config.source_enabled("appleMusicCache")
+                }
+                crate::domain::LyricsSource::QqMusic => config.source_enabled("qqMusic"),
+                _ => true,
+            }
     })?;
     let document = entries.remove(index);
     entries.insert(0, document.clone());
@@ -394,9 +586,12 @@ fn persist_local_cache(entries: &[LyricsDocument]) {
         eprintln!("[LyricsCache] 创建缓存目录失败: {error}");
         return;
     }
-    match serde_json::to_string(entries) {
+    match serde_json::to_string(&VerifiedLyricsCache {
+        match_version: crate::lyrics::matching::MATCH_VERSION,
+        entries: entries.to_vec(),
+    }) {
         Ok(text) => {
-            if let Err(error) = std::fs::write(path, text) {
+            if let Err(error) = crate::settings_store::atomic_write(&path, text.as_bytes()) {
                 eprintln!("[LyricsCache] 写入自身缓存失败: {error}");
             }
         }
@@ -404,18 +599,16 @@ fn persist_local_cache(entries: &[LyricsDocument]) {
     }
 }
 
-fn emit_status(
-    app_handle: &AppHandle,
-    track: &TrackIdentity,
-    state: LyricsLoadState,
-    message: Option<String>,
-) {
-    let payload = LyricsStatusPayload {
-        track: track.clone(),
-        state,
-        message,
-    };
-    if let Err(error) = app_handle.emit("lyrics-status-changed", payload) {
-        eprintln!("[Lyrics] 发送状态失败: {error}");
+#[cfg(test)]
+mod tests {
+    use super::*;
+    #[test]
+    fn legacy_unverified_cache_cannot_reintroduce_wrong_matches() {
+        assert!(decode_local_cache("[]").is_none());
+        assert_eq!(
+            decode_local_cache(r#"{"match_version":1,"entries":[]}"#),
+            Some(Vec::new())
+        );
+        assert!(decode_local_cache(r#"{"match_version":0,"entries":[]}"#).is_none());
     }
 }

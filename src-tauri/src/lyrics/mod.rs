@@ -1,8 +1,9 @@
-pub mod amll_db;
 pub mod am_api;
+pub mod amll_db;
 pub mod cache;
 pub mod cache_scanner;
 pub mod custom_pool;
+pub mod matching;
 pub mod models;
 pub mod provider;
 pub mod qq_music;

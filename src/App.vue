@@ -17,7 +17,7 @@
       :title="mediaTitle" 
       :artist="mediaArtist"
       :is-playing="isPlaying"
-      :position-ms="displayPositionMs"
+      :position-ms="positionMs"
       :duration-ms="durationMs"
       @prev="onPrev"
       @playPause="onPlayPause"
@@ -56,7 +56,7 @@ import type {
   AppSettings,
   LyricsDocument,
   LyricsLoadState,
-  LyricsStatusPayload,
+  LyricsSnapshotPayload,
   MediaPositionPayload,
   MediaSnapshotPayload,
   MediaStatePayload,
@@ -73,6 +73,12 @@ const isUnlockWindow = currentWindowLabel === 'unlock';
 const isHovering = ref(false);
 const mediaTitle = ref('等待 Apple Music 播放...');
 const mediaArtist = ref('');
+let mediaAlbum: string | null = null;
+let currentTrackRevision = -1;
+let lastMediaRevision = -1;
+let lastPositionRevision = -1;
+let lastLyricsRevision = -1;
+let playbackRate = 1;
 const isPlaying = ref(false);
 const positionMs = ref(0);
 const durationMs = ref(0);
@@ -86,8 +92,7 @@ const controlsLocked = ref(false);
 // 事件注销句柄
 let unlistenMediaState: UnlistenFn | null = null;
 let unlistenMediaPosition: UnlistenFn | null = null;
-let unlistenLyricsLoaded: UnlistenFn | null = null;
-let unlistenLyricsStatus: UnlistenFn | null = null;
+let unlistenLyricsUpdate: UnlistenFn | null = null;
 let animationFrameId: number | null = null;
 let unlistenLockState: UnlistenFn | null = null;
 let unlistenSettings: UnlistenFn | null = null;
@@ -146,12 +151,14 @@ function applyLyricsTimeOffset(payload: RuntimeLyricsTimeOffset) {
 }
 
 function interpolatedPosition(now = performance.now()) {
-  const elapsed = isPlaying.value ? Math.max(0, now - clockAnchorTime) : 0;
+  const elapsed = isPlaying.value ? Math.max(0, now - clockAnchorTime) * playbackRate : 0;
   const estimated = clockAnchorPositionMs + elapsed;
   return durationMs.value > 0 ? Math.min(estimated, durationMs.value) : estimated;
 }
 
 function applyAuthoritativePosition(payload: MediaPositionPayload) {
+  if (payload.track_revision !== currentTrackRevision || payload.revision < lastPositionRevision) return;
+  lastPositionRevision = payload.revision;
   const now = performance.now();
   const predicted = interpolatedPosition(now);
   const drift = payload.position_ms - predicted;
@@ -160,6 +167,7 @@ function applyAuthoritativePosition(payload: MediaPositionPayload) {
     : payload.position_ms;
 
   durationMs.value = payload.duration_ms;
+  playbackRate = payload.playback_rate;
   clockAnchorPositionMs = Math.max(0, corrected);
   clockAnchorTime = now;
   positionMs.value = clockAnchorPositionMs;
@@ -173,18 +181,25 @@ function updateInterpolatedPosition(now: number) {
 // ==========================================
 // 媒体状态事件载荷类型定义
 // ==========================================
+function clearLyricsForTrackChange(now: number) {
+  currentLyrics.value = null;
+  lyricsState.value = 'loading';
+  lyricsMessage.value = null;
+  positionMs.value = 0;
+  durationMs.value = 0;
+  clockAnchorPositionMs = 0;
+  clockAnchorTime = now;
+}
+
 function applyMediaState(payload: MediaStatePayload) {
-  const trackChanged = payload.track.title !== mediaTitle.value || payload.track.artist !== mediaArtist.value;
+  if (payload.revision < lastMediaRevision || payload.track_revision < currentTrackRevision) return;
+  lastMediaRevision = payload.revision;
+  const trackChanged = payload.track_revision !== currentTrackRevision || payload.track.title !== mediaTitle.value || payload.track.artist !== mediaArtist.value || payload.track.album !== mediaAlbum;
   const nextIsPlaying = payload.playback_state === 'Playing';
   const now = performance.now();
   if (trackChanged) {
-    currentLyrics.value = null;
-    lyricsState.value = 'loading';
-    lyricsMessage.value = null;
-    positionMs.value = 0;
-    durationMs.value = 0;
-    clockAnchorPositionMs = 0;
-    clockAnchorTime = now;
+    // 先同步清空上一首歌词，再发布新曲目信息，避免请求期间脏读。
+    clearLyricsForTrackChange(now);
   } else if (nextIsPlaying !== isPlaying.value) {
     clockAnchorPositionMs = interpolatedPosition(now);
     clockAnchorTime = now;
@@ -193,7 +208,17 @@ function applyMediaState(payload: MediaStatePayload) {
 
   mediaTitle.value = payload.track.title;
   mediaArtist.value = payload.track.artist;
+  mediaAlbum = payload.track.album;
+  currentTrackRevision = payload.track_revision;
   isPlaying.value = nextIsPlaying;
+}
+
+function applyLyricsSnapshot(payload: LyricsSnapshotPayload) {
+  if (payload.track_revision !== currentTrackRevision || payload.revision < lastLyricsRevision) return;
+  lastLyricsRevision = payload.revision;
+  currentLyrics.value = payload.document;
+  lyricsState.value = payload.status?.state ?? 'loading';
+  lyricsMessage.value = payload.status?.message ?? null;
 }
 
 // ==========================================
@@ -216,14 +241,18 @@ onMounted(async () => {
   unlistenLyricsTimeOffset = await listen<RuntimeLyricsTimeOffset>('lyrics-time-offset-changed', (event) => {
     applyLyricsTimeOffset(event.payload);
   });
-  try {
-    const settings = await invoke<AppSettings>('get_settings');
-    applyTheme(settings.themeCss);
-    applyLyricsTimeOffset(await invoke<RuntimeLyricsTimeOffset>('get_runtime_lyrics_time_offset'));
-  } catch (error) {
-    console.error('get_settings failed:', error);
-  }
   unlistenSettings = await listen<AppSettings>('settings-changed', (event) => applyTheme(event.payload.themeCss));
+  const [settingsResult, offsetResult] = await Promise.allSettled([
+    invoke<AppSettings>('get_settings'),
+    invoke<RuntimeLyricsTimeOffset>('get_runtime_lyrics_time_offset'),
+  ]);
+  if (settingsResult.status === 'fulfilled') {
+    applyTheme(settingsResult.value.themeCss);
+    // 偏移命令失败时仍能使用持久化值，不让主题或可选设置阻断恢复。
+    if (offsetResult.status === 'rejected' && lyricsTimeOffsetRevision < 0) lyricsTimeOffsetMs.value = settingsResult.value.lyricsTimeOffsetMs;
+  } else console.error('get_settings failed:', settingsResult.reason);
+  if (offsetResult.status === 'fulfilled') applyLyricsTimeOffset(offsetResult.value);
+  else console.error('get_runtime_lyrics_time_offset failed:', offsetResult.reason);
 
   // 监听 Rust 端广播的媒体状态变更事件
   unlistenMediaState = await listen<MediaStatePayload>('media-state-changed', (event) => {
@@ -237,21 +266,13 @@ onMounted(async () => {
   });
 
   // 监听歌词加载完成事件
-  unlistenLyricsLoaded = await listen<LyricsDocument>('lyrics-loaded', (event) => {
-    console.log('[IPC] lyrics-loaded:', event.payload);
-    if (sameTrack(event.payload.track.title, event.payload.track.artist)) currentLyrics.value = event.payload;
-  });
-
-  unlistenLyricsStatus = await listen<LyricsStatusPayload>('lyrics-status-changed', (event) => {
-    if (!sameTrack(event.payload.track.title, event.payload.track.artist)) return;
-    lyricsState.value = event.payload.state;
-    lyricsMessage.value = event.payload.message;
-  });
+  unlistenLyricsUpdate = await listen<LyricsSnapshotPayload>('lyrics-updated', (event) => applyLyricsSnapshot(event.payload));
   // 监听全部就绪后主动读取一次快照，补回 WebView 挂载前可能错过的事件。
   try {
     const snapshot = await invoke<MediaSnapshotPayload>('get_media_snapshot');
     applyMediaState(snapshot.media);
     applyAuthoritativePosition(snapshot.position);
+    applyLyricsSnapshot(snapshot.lyrics);
   } catch (error) {
     console.error('get_media_snapshot failed:', error);
   }
@@ -262,17 +283,12 @@ onMounted(async () => {
 onUnmounted(() => {
   unlistenMediaState?.();
   unlistenMediaPosition?.();
-  unlistenLyricsLoaded?.();
-  unlistenLyricsStatus?.();
+  unlistenLyricsUpdate?.();
   unlistenLockState?.();
   unlistenSettings?.();
   unlistenLyricsTimeOffset?.();
   if (animationFrameId !== null) cancelAnimationFrame(animationFrameId);
 });
-
-function sameTrack(title: string, artist: string) {
-  return title === mediaTitle.value && artist === mediaArtist.value;
-}
 
 async function startResize(direction: ResizeDirection) {
   try {

@@ -225,6 +225,7 @@ const currentSection = computed(() => sections.find((item) => item.id === active
 const canMatch = computed(() => Boolean(currentTrack.value.title.trim() && currentTrack.value.artist.trim() && currentTrack.value.title !== '等待播放...'));
 let unlistenLyricsTimeOffset: UnlistenFn | null = null;
 let unlistenMediaState: UnlistenFn | null = null;
+let mediaStateRevision = -1;
 let lyricsTimeOffsetRevision = -1;
 let latestLyricsTimeOffset: RuntimeLyricsTimeOffset = { offsetMs: 0, revision: -1 };
 let pendingLyricsOffsetUpdate: Promise<void> = Promise.resolve();
@@ -250,25 +251,35 @@ onMounted(async () => {
     unlistenLyricsTimeOffset = await listen<RuntimeLyricsTimeOffset>('lyrics-time-offset-changed', (event) => {
       applyLyricsTimeOffset(event.payload);
     });
-    unlistenMediaState = await listen<MediaStatePayload>('media-state-changed', (event) => updateCurrentTrack(event.payload.track));
-    const [loadedSettings, loadedConfig, runtimeOffset, fonts, mediaSnapshot] = await Promise.all([
+    unlistenMediaState = await listen<MediaStatePayload>('media-state-changed', (event) => applyMediaState(event.payload));
+    const [loadedSettings, loadedConfig, runtimeOffset, fonts, mediaSnapshot] = await Promise.allSettled([
       invoke<AppSettings>('get_settings'),
       invoke<AppConfig>('get_config'),
       invoke<RuntimeLyricsTimeOffset>('get_runtime_lyrics_time_offset'),
       invoke<string[]>('get_system_fonts'),
       invoke<MediaSnapshotPayload>('get_media_snapshot'),
     ]);
-    settings.value = loadedSettings;
-    config.value = loadedConfig;
-    applyLyricsTimeOffset(runtimeOffset);
-    applyLyricsTimeOffset(latestLyricsTimeOffset);
-    systemFonts.value = fonts.length > 0 ? fonts : systemFonts.value;
-    updateCurrentTrack(mediaSnapshot.media.track);
+    if (loadedSettings.status === 'fulfilled') {
+      settings.value = loadedSettings.value;
+      lyricsOffsetInput.value = String(loadedSettings.value.lyricsTimeOffsetMs);
+    } else message.value = String(loadedSettings.reason);
+    if (loadedConfig.status === 'fulfilled') config.value = loadedConfig.value;
+    else message.value = String(loadedConfig.reason);
+    if (runtimeOffset.status === 'fulfilled') applyLyricsTimeOffset(runtimeOffset.value);
+    if (latestLyricsTimeOffset.revision >= 0) applyLyricsTimeOffset(latestLyricsTimeOffset);
+    if (fonts.status === 'fulfilled' && fonts.value.length > 0) systemFonts.value = fonts.value;
+    if (mediaSnapshot.status === 'fulfilled') applyMediaState(mediaSnapshot.value.media);
     if (!systemFonts.value.includes(editor.value.fontFamily)) systemFonts.value.unshift(editor.value.fontFamily);
   } catch (error) { message.value = String(error); }
 });
 
 onUnmounted(() => { unlistenLyricsTimeOffset?.(); unlistenMediaState?.(); });
+
+function applyMediaState(payload: MediaStatePayload) {
+  if (payload.revision < mediaStateRevision) return;
+  mediaStateRevision = payload.revision;
+  updateCurrentTrack(payload.track);
+}
 
 function updateCurrentTrack(track: TrackIdentity) {
   const changed = track.title !== currentTrack.value.title || track.artist !== currentTrack.value.artist || track.album !== currentTrack.value.album;

@@ -18,11 +18,13 @@ pub mod domain;
 pub mod logger;
 pub mod lyrics;
 pub mod media;
+pub mod playback;
+pub mod settings_store;
 
 use base64::Engine;
 use serde::{Deserialize, Serialize};
 use std::sync::atomic::{AtomicBool, AtomicI64, AtomicU64, Ordering};
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, Once};
 use std::time::Duration;
 use tauri::menu::{CheckMenuItem, Menu, MenuItem, PredefinedMenuItem};
 use tauri::tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent};
@@ -33,6 +35,7 @@ static SETTINGS_IO_LOCK: Mutex<()> = Mutex::new(());
 static LYRICS_OFFSET_UPDATE_LOCK: Mutex<()> = Mutex::new(());
 static LYRICS_TIME_OFFSET_MS: AtomicI64 = AtomicI64::new(0);
 static LYRICS_TIME_OFFSET_REVISION: AtomicU64 = AtomicU64::new(0);
+static LYRICS_OFFSET_INITIALIZED: Once = Once::new();
 
 struct WindowLockState {
     locked: AtomicBool,
@@ -112,20 +115,9 @@ impl Default for AppSettings {
     }
 }
 
-fn settings_path() -> Result<std::path::PathBuf, String> {
-    app_paths::settings_file()
-}
-
 fn read_settings_unlocked() -> Result<AppSettings, String> {
-    let path = settings_path()?;
-    let encoded = match std::fs::read_to_string(path) {
-        Ok(value) => value,
-        Err(_) => return Ok(AppSettings::default()),
-    };
-    let bytes = base64::engine::general_purpose::STANDARD
-        .decode(encoded.trim())
-        .map_err(|error| format!("设置 Base64 解码失败: {error}"))?;
-    serde_json::from_slice(&bytes).map_err(|error| format!("设置解析失败: {error}"))
+    serde_json::from_value(settings_store::read()?)
+        .map_err(|error| format!("设置解析失败: {error}"))
 }
 
 fn normalize_settings(mut settings: AppSettings) -> AppSettings {
@@ -140,12 +132,20 @@ fn normalize_settings(mut settings: AppSettings) -> AppSettings {
 }
 
 fn write_settings_unlocked(settings: &AppSettings) -> Result<(), String> {
-    let bytes = serde_json::to_vec(settings).map_err(|error| format!("设置序列化失败: {error}"))?;
-    let encoded = base64::engine::general_purpose::STANDARD.encode(bytes);
-    let path = settings_path()?;
-    let parent = path.parent().ok_or_else(|| "设置目录无效".to_string())?;
-    std::fs::create_dir_all(parent).map_err(|error| format!("创建设置目录失败: {error}"))?;
-    std::fs::write(path, encoded).map_err(|error| format!("写入设置失败: {error}"))
+    let value =
+        serde_json::to_value(settings).map_err(|error| format!("设置序列化失败: {error}"))?;
+    settings_store::update(|root| root.extend(value.as_object().unwrap().clone()))
+}
+
+fn initialize_runtime_lyrics_offset() {
+    LYRICS_OFFSET_INITIALIZED.call_once(|| {
+        let settings = read_settings_unlocked().unwrap_or_else(|error| {
+            eprintln!("[设置] 启动读取失败: {error}");
+            AppSettings::default()
+        });
+        LYRICS_TIME_OFFSET_MS.store(settings.lyrics_time_offset_ms, Ordering::SeqCst);
+        LYRICS_TIME_OFFSET_REVISION.store(1, Ordering::SeqCst);
+    });
 }
 
 #[tauri::command]
@@ -158,6 +158,7 @@ fn get_settings() -> Result<AppSettings, String> {
 
 #[tauri::command]
 fn save_settings(app: AppHandle, settings: AppSettings) -> Result<(), String> {
+    initialize_runtime_lyrics_offset();
     let runtime_offset_guard = LYRICS_OFFSET_UPDATE_LOCK
         .lock()
         .map_err(|_| "歌词偏移状态锁已损坏".to_string())?;
@@ -195,15 +196,19 @@ fn get_config() -> Result<config::AppConfig, String> {
 }
 
 #[tauri::command]
-fn save_config(config: config::AppConfig) -> Result<(), String> {
+fn save_config(app: AppHandle, config: config::AppConfig) -> Result<(), String> {
     let _guard = SETTINGS_IO_LOCK
         .lock()
         .map_err(|_| "设置文件锁已损坏".to_string())?;
-    config::write_config(&config.normalize())
+    config::write_config(&config.normalize())?;
+    drop(_guard);
+    lyrics::provider::refresh_current_lyrics(app);
+    Ok(())
 }
 
 #[tauri::command]
 fn get_runtime_lyrics_time_offset() -> RuntimeLyricsTimeOffset {
+    initialize_runtime_lyrics_offset();
     let _guard = LYRICS_OFFSET_UPDATE_LOCK.lock().ok();
     RuntimeLyricsTimeOffset {
         offset_ms: LYRICS_TIME_OFFSET_MS.load(Ordering::SeqCst),
@@ -215,6 +220,7 @@ fn update_runtime_lyrics_time_offset(
     app: &AppHandle,
     offset_ms: i64,
 ) -> Result<RuntimeLyricsTimeOffset, String> {
+    initialize_runtime_lyrics_offset();
     let _guard = LYRICS_OFFSET_UPDATE_LOCK
         .lock()
         .map_err(|_| "歌词偏移状态锁已损坏".to_string())?;
@@ -241,6 +247,7 @@ fn adjust_runtime_lyrics_time_offset(
     app: AppHandle,
     delta_ms: i64,
 ) -> Result<RuntimeLyricsTimeOffset, String> {
+    initialize_runtime_lyrics_offset();
     let _guard = LYRICS_OFFSET_UPDATE_LOCK
         .lock()
         .map_err(|_| "歌词偏移状态锁已损坏".to_string())?;
@@ -576,6 +583,8 @@ fn resume_window_bounds_saving(suspended: Arc<AtomicBool>) {
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
+    // WebView 会在 setup 完成前开始加载，首次 IPC 也必须看到持久化偏移。
+    initialize_runtime_lyrics_offset();
     tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_dialog::init())
@@ -589,7 +598,6 @@ pub fn run() {
             let handle = app.handle().clone();
             media::smtc::SmtcManager::new(handle).start();
             let initial_settings = get_settings().unwrap_or_default();
-            LYRICS_TIME_OFFSET_MS.store(initial_settings.lyrics_time_offset_ms, Ordering::SeqCst);
             let bounds_save_suspended = Arc::new(AtomicBool::new(true));
             let bounds_save_generation = Arc::new(AtomicU64::new(0));
 

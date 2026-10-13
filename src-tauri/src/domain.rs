@@ -65,6 +65,8 @@ pub struct LyricsStatusPayload {
 pub struct MediaStatePayload {
     pub track: TrackIdentity,
     pub playback_state: PlaybackState,
+    pub track_revision: u64,
+    pub revision: u64,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -75,14 +77,26 @@ pub enum PlaybackState {
     Unknown,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
 pub struct MediaPositionPayload {
     pub position_ms: u64,
     pub duration_ms: u64,
+    pub playback_rate: f64,
+    pub track_revision: u64,
+    pub revision: u64,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct LyricsSnapshotPayload {
+    pub document: Option<LyricsDocument>,
+    pub status: Option<LyricsStatusPayload>,
+    pub track_revision: u64,
+    pub revision: u64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct MediaSnapshotPayload {
     pub media: MediaStatePayload,
     pub position: MediaPositionPayload,
+    pub lyrics: LyricsSnapshotPayload,
 }

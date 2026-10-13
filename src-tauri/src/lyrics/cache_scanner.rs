@@ -1,85 +1,197 @@
+use quick_xml::{events::Event, Reader};
 use std::path::{Path, PathBuf};
-use serde_json::Value;
-
-const FILE_PREFIX: &str = "ttmlLyrics[";
-const MATCH_TOLERANCE_MS: u64 = 4_000;
-const SCAN_ATTEMPTS: usize = 8;
-const SCAN_INTERVAL_MS: u64 = 240;
-
-/// 从 Apple Music WebView2 缓存中按新旧顺序寻找与当前歌曲时长匹配的真实 track id。
-pub fn find_target_cache(target_duration_ms: u64) -> Result<Option<String>, String> {
-    let Some(local_app_data) = std::env::var_os("LOCALAPPDATA") else { return Ok(None) };
-    let root = PathBuf::from(local_app_data)
-        .join("Packages/AppleInc.AppleMusicWin_nzyj5cx40ttqa/AC/INetCache");
+use std::time::SystemTime;
+const MAX_CACHE_FILE_SIZE: u64 = 8 * 1024 * 1024;
+pub const MATCH_TOLERANCE_MS: u64 = 4_000;
+#[derive(Debug, Clone)]
+pub struct CacheCandidate {
+    pub track_id: String,
+    pub ttml: String,
+    pub duration_ms: u64,
+    pub modified: SystemTime,
+}
+pub fn cache_root() -> Option<PathBuf> {
+    std::env::var_os("LOCALAPPDATA").map(|local| {
+        PathBuf::from(local).join("Packages/AppleInc.AppleMusicWin_nzyj5cx40ttqa/AC/INetCache")
+    })
+}
+pub fn scan_candidates(
+    root: &Path,
+    target_duration_ms: u64,
+) -> Result<Vec<CacheCandidate>, String> {
     let mut files = Vec::new();
-    println!("[CacheScanner] 开始扫描: root={}, target_duration_ms={}, tolerance_ms={}, attempts={}, interval_ms={}", root.display(), target_duration_ms, MATCH_TOLERANCE_MS, SCAN_ATTEMPTS, SCAN_INTERVAL_MS);
-    for attempt in 0..SCAN_ATTEMPTS {
-        files.clear();
-        collect_files(&root, &mut files)?;
-        files.sort_by_key(|path| std::fs::metadata(path).and_then(|m| m.modified()).ok());
-        files.reverse();
-        println!("[CacheScanner] 第 {}/{} 次扫描，找到 {} 个候选文件", attempt + 1, SCAN_ATTEMPTS, files.len());
-
-        for path in &files {
-        let Ok(content) = std::fs::read_to_string(&path) else { continue };
-        let Ok(json) = serde_json::from_str::<Value>(&content) else { continue };
-        let Some(ttml) = find_string(&json, "ttml") else { continue };
-        let Some(duration_ms) = body_duration_ms(&ttml) else { continue };
-        println!("[CacheScanner] 检查: path={}, duration_ms={}", path.display(), duration_ms);
-        if duration_ms.abs_diff(target_duration_ms) <= MATCH_TOLERANCE_MS {
-            if let Some(id) = find_string(&json, "lyricsId") {
-                let id = id.strip_prefix("AP_").unwrap_or(&id).to_string();
-                if !id.is_empty() {
-                    println!("[CacheScanner] 命中: track_id={}, path={}", id, path.display());
-                    return Ok(Some(id));
-                }
-            }
+    collect_files(root, &mut files)?;
+    files.sort_by_key(|path| {
+        std::fs::metadata(path)
+            .and_then(|metadata| metadata.modified())
+            .ok()
+    });
+    files.reverse();
+    let mut candidates = Vec::new();
+    for path in files {
+        let Ok(metadata) = std::fs::metadata(&path) else {
+            continue;
+        };
+        if metadata.len() > MAX_CACHE_FILE_SIZE {
+            continue;
         }
+        let Ok(content) = std::fs::read_to_string(&path) else {
+            continue;
+        };
+        let Ok(json) = serde_json::from_str::<serde_json::Value>(&content) else {
+            continue;
+        };
+        if json
+            .get("status")
+            .and_then(serde_json::Value::as_str)
+            .is_some_and(|status| status != "success")
+        {
+            continue;
         }
-        if attempt + 1 < SCAN_ATTEMPTS {
-            std::thread::sleep(std::time::Duration::from_millis(SCAN_INTERVAL_MS));
+        let Some(ttml) = json.get("ttml").and_then(serde_json::Value::as_str) else {
+            continue;
+        };
+        let Some(track_id) = json
+            .get("lyricsId")
+            .and_then(serde_json::Value::as_str)
+            .and_then(catalog_id)
+        else {
+            continue;
+        };
+        let Some(duration_ms) = body_duration_ms(ttml) else {
+            continue;
+        };
+        if target_duration_ms > 0 && duration_ms.abs_diff(target_duration_ms) > MATCH_TOLERANCE_MS {
+            continue;
+        }
+        candidates.push(CacheCandidate {
+            track_id: track_id.into(),
+            ttml: ttml.into(),
+            duration_ms,
+            modified: metadata.modified().unwrap_or(SystemTime::UNIX_EPOCH),
+        });
+        if candidates.len() >= 64 {
+            break;
         }
     }
-    println!("[CacheScanner] 扫描结束，未找到匹配的 lyricsId");
-    Ok(None)
+    Ok(candidates)
 }
-
 fn collect_files(root: &Path, files: &mut Vec<PathBuf>) -> Result<(), String> {
-    if !root.is_dir() { return Ok(()) }
-    for entry in std::fs::read_dir(root).map_err(|e| e.to_string())? {
-        let path = entry.map_err(|e| e.to_string())?.path();
-        if path.is_dir() { collect_files(&path, files)?; }
-        else if path.file_name().and_then(|n| n.to_str()).is_some_and(is_cache_name) { files.push(path); }
+    if !root.is_dir() {
+        return Ok(());
+    }
+    for entry in std::fs::read_dir(root).map_err(|error| error.to_string())? {
+        let entry = entry.map_err(|error| error.to_string())?;
+        let path = entry.path();
+        let kind = entry.file_type().map_err(|error| error.to_string())?;
+        if kind.is_dir() {
+            collect_files(&path, files)?;
+        } else if kind.is_file()
+            && path
+                .file_name()
+                .and_then(|name| name.to_str())
+                .is_some_and(is_cache_name)
+        {
+            files.push(path);
+        }
     }
     Ok(())
 }
-
 fn is_cache_name(name: &str) -> bool {
-    name.starts_with(FILE_PREFIX) && name.ends_with("].json")
+    name.strip_prefix("ttmlLyrics[")
+        .and_then(|value| value.strip_suffix("].json"))
+        .is_some_and(|number| {
+            !number.is_empty() && number.bytes().all(|byte| byte.is_ascii_digit())
+        })
 }
 
-fn body_duration_ms(ttml: &str) -> Option<u64> {
-    let start = ttml.find("<body")?;
-    let end = ttml[start..].find('>')? + start;
-    let body = &ttml[start..end];
-    let value = body.split("dur=").nth(1)?.trim_start_matches(['"', '\'']);
-    let value = value.split(['"', '\'']).next()?;
+fn catalog_id(lyrics_id: &str) -> Option<&str> {
+    let value = lyrics_id.strip_prefix("AP_")?;
+    let (id, language) = value
+        .split_once('-')
+        .map(|(id, language)| (id, Some(language)))
+        .unwrap_or((value, None));
+    if id.is_empty() || !id.bytes().all(|byte| byte.is_ascii_digit()) {
+        return None;
+    }
+    if language.is_some_and(|language| {
+        !language
+            .as_bytes()
+            .first()
+            .is_some_and(u8::is_ascii_alphabetic)
+            || !language
+                .bytes()
+                .all(|byte| byte.is_ascii_alphanumeric() || byte == b'-')
+    }) {
+        return None;
+    }
+    Some(id)
+}
+pub fn body_duration_ms(ttml: &str) -> Option<u64> {
+    let mut reader = Reader::from_str(ttml);
+    loop {
+        match reader.read_event().ok()? {
+            Event::Start(element) | Event::Empty(element)
+                if element.local_name().as_ref() == b"body" =>
+            {
+                for attribute in element.attributes() {
+                    let attribute = attribute.ok()?;
+                    if attribute.key.as_ref() == b"dur" {
+                        let value = attribute.decode_and_unescape_value(reader.decoder()).ok()?;
+                        return parse_time(&value);
+                    }
+                }
+                return None;
+            }
+            Event::Eof => return None,
+            _ => {}
+        }
+    }
+}
+fn parse_time(value: &str) -> Option<u64> {
+    let value = value.trim();
+    if let Some(milliseconds) = value.strip_suffix("ms") {
+        return milliseconds
+            .parse::<f64>()
+            .ok()
+            .filter(|v| v.is_finite() && *v >= 0.0)
+            .map(|v| v.round() as u64);
+    }
     let value = value.strip_suffix('s').unwrap_or(value);
     let parts: Vec<_> = value.split(':').collect();
     let seconds = match parts.as_slice() {
-        [seconds] => seconds.parse::<f64>().ok()?,
-        [minutes, seconds] => minutes.parse::<f64>().ok()? * 60.0 + seconds.parse::<f64>().ok()?,
-        [hours, minutes, seconds] => hours.parse::<f64>().ok()? * 3600.0 + minutes.parse::<f64>().ok()? * 60.0 + seconds.parse::<f64>().ok()?,
+        [s] => s.parse::<f64>().ok()?,
+        [m, s] => m.parse::<f64>().ok()? * 60.0 + s.parse::<f64>().ok()?,
+        [h, m, s] => {
+            h.parse::<f64>().ok()? * 3600.0
+                + m.parse::<f64>().ok()? * 60.0
+                + s.parse::<f64>().ok()?
+        }
         _ => return None,
     };
     (seconds.is_finite() && seconds >= 0.0).then_some((seconds * 1000.0).round() as u64)
 }
-
-fn find_string(value: &Value, key: &str) -> Option<String> {
-    match value {
-        Value::Object(map) => map.get(key).and_then(Value::as_str).map(str::to_owned)
-            .or_else(|| map.values().find_map(|v| find_string(v, key))),
-        Value::Array(items) => items.iter().find_map(|v| find_string(v, key)),
-        _ => None,
+#[cfg(test)]
+mod tests {
+    use super::*;
+    #[test]
+    fn parses_real_cache_duration_and_namespaced_body() {
+        assert_eq!(
+            body_duration_ms(r#"<tt><body dur="3:05.041"></body></tt>"#),
+            Some(185041)
+        );
+        assert_eq!(
+            body_duration_ms(r#"<tt:tt xmlns:tt="urn:test"><tt:body dur = '185041ms'/></tt:tt>"#),
+            Some(185041)
+        );
+        assert!(body_duration_ms("<tt><body dur='NaNs'/></tt>").is_none());
+    }
+    #[test]
+    fn localized_lyrics_id_keeps_catalog_id_without_locale_suffix() {
+        assert_eq!(super::catalog_id("AP_6820341520-en"), Some("6820341520"));
+        assert_eq!(super::catalog_id("AP_123-zh-Hans"), Some("123"));
+        assert_eq!(super::catalog_id("AP_6779309947"), Some("6779309947"));
+        assert!(super::catalog_id("AP_123-../path").is_none());
+        assert!(super::catalog_id("AP_bad-en").is_none());
     }
 }

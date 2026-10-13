@@ -1,113 +1,75 @@
-// =============================================================================
-// SMTC (System Media Transport Controls) 后端实现
-// 用于从 Windows 系统媒体控制中读取 Apple Music 的播放状态，并通过 Tauri 事件
-// 将媒体信息（标题、艺术家、播放状态、进度）推送给前端。
-// =============================================================================
-
-use std::sync::{Arc, Mutex};
-use std::time::Duration;
-use tauri::{command, Emitter};
+use crate::domain::{
+    MediaPositionPayload, MediaSnapshotPayload, MediaStatePayload, PlaybackState, TrackIdentity,
+};
+use std::sync::{mpsc, Arc, Mutex};
+use std::time::{Duration, Instant, SystemTime};
+use tauri::command;
 use windows::core::Interface;
-
-// ---- Windows API 导入 ----
-// 从 windows crate 导入 SMTC 相关的 WinRT 类型
+use windows::Foundation::TypedEventHandler;
 use windows::Media::Control::{
     GlobalSystemMediaTransportControlsSession, GlobalSystemMediaTransportControlsSessionManager,
     GlobalSystemMediaTransportControlsSessionPlaybackStatus,
 };
-// TypedEventHandler 用于注册 WinRT 事件回调
-use crate::domain::{
-    MediaPositionPayload, MediaSnapshotPayload, MediaStatePayload, PlaybackState, TrackIdentity,
-};
-use windows::Foundation::TypedEventHandler;
 use windows::Win32::System::WinRT::{RoInitialize, RoUninitialize, RO_INIT_MULTITHREADED};
-
 struct WinRtApartment;
-
 impl WinRtApartment {
     fn initialize() -> windows::core::Result<Self> {
         unsafe { RoInitialize(RO_INIT_MULTITHREADED)? };
         Ok(Self)
     }
 }
-
 impl Drop for WinRtApartment {
     fn drop(&mut self) {
         unsafe { RoUninitialize() };
     }
 }
-
-// =============================================================================
-// 全局会话存储
-// 使用 Mutex<Option<...>> 保存当前活跃的 SMTC 会话引用，
-// 供 Tauri 命令（play_pause / next_track / prev_track）同步访问。
-// =============================================================================
 static CURRENT_SESSION: Mutex<Option<GlobalSystemMediaTransportControlsSession>> = Mutex::new(None);
-
-static CURRENT_MEDIA_STATE: Mutex<Option<MediaStatePayload>> = Mutex::new(None);
-static CURRENT_MEDIA_POSITION: Mutex<MediaPositionPayload> = Mutex::new(MediaPositionPayload {
-    position_ms: 0,
-    duration_ms: 0,
-});
-
-// =============================================================================
-// 辅助函数
-// =============================================================================
-
-/// 将 Windows SMTC 的 PlaybackStatus 枚举转换为我们自定义的 PlaybackState
 fn convert_status(
     status: GlobalSystemMediaTransportControlsSessionPlaybackStatus,
 ) -> PlaybackState {
     match status {
-        // 正在播放
         GlobalSystemMediaTransportControlsSessionPlaybackStatus::Playing => PlaybackState::Playing,
-        // 已暂停
         GlobalSystemMediaTransportControlsSessionPlaybackStatus::Paused => PlaybackState::Paused,
-        // 已停止或已关闭
         GlobalSystemMediaTransportControlsSessionPlaybackStatus::Stopped
         | GlobalSystemMediaTransportControlsSessionPlaybackStatus::Closed => PlaybackState::Stopped,
-        // 其他状态（Opened / Changing 等）视为未知
         _ => PlaybackState::Unknown,
     }
 }
-
-/// 在所有活跃的 SMTC 会话中严格查找 Apple Music 会话。
-/// 不回退到系统当前会话，避免读取或控制 Spotify、浏览器等其他播放器。
 fn find_apple_music_session(
     manager: &GlobalSystemMediaTransportControlsSessionManager,
 ) -> windows::core::Result<Option<GlobalSystemMediaTransportControlsSession>> {
-    // GetSessions() 返回当前所有已注册 SMTC 的应用会话列表
     let sessions = manager.GetSessions()?;
-    for i in 0..sessions.Size()? {
-        let session = sessions.GetAt(i)?;
-        // SourceAppUserModelId() 返回应用的 AppUserModelId 字符串
-        let app_id = session.SourceAppUserModelId()?.to_string();
-        let app_id_lower = app_id.to_lowercase();
-        if app_id_lower.contains("applemusic") {
-            println!("[SMTC] 找到 Apple Music 会话: {}", app_id);
+    for index in 0..sessions.Size()? {
+        let session = sessions.GetAt(index)?;
+        if session
+            .SourceAppUserModelId()?
+            .to_string()
+            .to_lowercase()
+            .contains("applemusic")
+        {
             return Ok(Some(session));
         }
     }
     Ok(None)
 }
-
 fn waiting_state() -> MediaStatePayload {
     MediaStatePayload {
         track: TrackIdentity {
-            title: "等待播放...".to_string(),
+            title: "等待播放...".into(),
             artist: String::new(),
             album: None,
         },
         playback_state: PlaybackState::Stopped,
+        track_revision: 0,
+        revision: 0,
     }
 }
-
 fn is_unavailable_track(track: &TrackIdentity) -> bool {
     track.title.trim().is_empty()
         || track.artist.trim().is_empty()
         || track.title.contains("正在连接")
+        || track.title == "等待播放..."
 }
-
 fn normalize_playable_state(payload: MediaStatePayload) -> MediaStatePayload {
     if is_unavailable_track(&payload.track) {
         waiting_state()
@@ -115,49 +77,17 @@ fn normalize_playable_state(payload: MediaStatePayload) -> MediaStatePayload {
         payload
     }
 }
-
-fn emit_state_and_fetch_lyrics(app_handle: &tauri::AppHandle, payload: MediaStatePayload) {
-    let payload = normalize_playable_state(payload);
-    emit_media_state(app_handle, &payload);
-    if is_unavailable_track(&payload.track) || payload.track.title == "等待播放..." {
-        crate::lyrics::provider::enter_waiting_state();
-        return;
-    }
-    let duration_ms = CURRENT_MEDIA_POSITION
-        .lock()
-        .map(|position| position.duration_ms)
-        .unwrap_or_default();
-    crate::lyrics::provider::fetch_and_emit_lyrics(payload.track, app_handle.clone(), duration_ms);
-}
-
-fn store_media_state(payload: &MediaStatePayload) {
-    match CURRENT_MEDIA_STATE.lock() {
-        Ok(mut state) => *state = Some(payload.clone()),
-        Err(error) => eprintln!("[SMTC] 媒体状态锁已损坏: {}", error),
-    }
-}
-
-fn store_media_position(payload: &MediaPositionPayload) {
-    match CURRENT_MEDIA_POSITION.lock() {
-        Ok(mut position) => *position = payload.clone(),
-        Err(error) => eprintln!("[SMTC] 媒体进度锁已损坏: {}", error),
-    }
-}
-
-fn emit_media_state(app_handle: &tauri::AppHandle, payload: &MediaStatePayload) {
-    store_media_state(payload);
-    if let Err(error) = app_handle.emit("media-state-changed", payload) {
-        eprintln!("[SMTC] 发送媒体状态失败: {}", error);
-    }
-}
-
 fn clear_current_session() {
-    match CURRENT_SESSION.lock() {
-        Ok(mut session) => *session = None,
-        Err(error) => eprintln!("[SMTC] 当前会话锁已损坏: {}", error),
+    if let Ok(mut session) = CURRENT_SESSION.lock() {
+        *session = None;
     }
 }
-
+fn enter_waiting(app: &tauri::AppHandle) {
+    clear_current_session();
+    crate::lyrics::provider::enter_waiting_state();
+    let media = crate::playback::update_media(app, waiting_state());
+    crate::playback::update_position(app, media.track_revision, MediaPositionPayload::default());
+}
 fn non_empty(value: String) -> Option<String> {
     let value = value.trim();
     (!value.is_empty()).then(|| value.to_string())
@@ -165,7 +95,7 @@ fn non_empty(value: String) -> Option<String> {
 
 fn metadata_segments(value: &str) -> Vec<&str> {
     value
-        .split(|ch| matches!(ch, '—' | '–' | '－' | '一'))
+        .split(|ch| matches!(ch, '—' | '–' | '－'))
         .map(str::trim)
         .filter(|part| !part.is_empty())
         .collect()
@@ -213,7 +143,7 @@ fn clean_artist(artist: String, album: Option<&str>) -> String {
     artist
         .char_indices()
         .rev()
-        .filter(|(_, ch)| matches!(ch, '-' | '—' | '–' | '－' | '一'))
+        .filter(|(_, ch)| matches!(ch, '-' | '—' | '–' | '－'))
         .find_map(|(index, ch)| {
             let suffix = artist[index + ch.len_utf8()..].trim();
             (normalize_metadata(suffix) == normalize_metadata(album)).then(|| &artist[..index])
@@ -258,329 +188,358 @@ fn read_media_state(
     Ok(MediaStatePayload {
         track,
         playback_state,
+        track_revision: 0,
+        revision: 0,
     })
 }
 
-// =============================================================================
-// SmtcManager —— SMTC 后台管理器
-// =============================================================================
+#[derive(Debug, Clone, Copy, PartialEq)]
+struct TimelineSample {
+    position_ms: u64,
+    duration_ms: u64,
+    updated_at: i64,
+    rate: f64,
+}
+fn utc_ticks() -> i64 {
+    const EPOCH: i64 = 116444736000000000;
+    EPOCH
+        + SystemTime::now()
+            .duration_since(SystemTime::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_nanos()
+            .saturating_div(100)
+            .min((i64::MAX - EPOCH) as u128) as i64
+}
+fn estimate_position(sample: TimelineSample, playing: bool, now: i64) -> MediaPositionPayload {
+    let elapsed = if playing && sample.updated_at > 0 {
+        (now.saturating_sub(sample.updated_at)).max(0) as f64 / 10000.0 * sample.rate
+    } else {
+        0.0
+    };
+    let position = sample.position_ms.saturating_add(elapsed.round() as u64);
+    MediaPositionPayload {
+        position_ms: if sample.duration_ms > 0 {
+            position.min(sample.duration_ms)
+        } else {
+            position
+        },
+        duration_ms: sample.duration_ms,
+        playback_rate: sample.rate,
+        track_revision: 0,
+        revision: 0,
+    }
+}
+fn read_timeline(
+    session: &GlobalSystemMediaTransportControlsSession,
+) -> windows::core::Result<TimelineSample> {
+    let timeline = session.GetTimelineProperties()?;
+    let start = timeline.StartTime()?.Duration;
+    let end = timeline.EndTime()?.Duration;
+    let rate = session
+        .GetPlaybackInfo()?
+        .PlaybackRate()
+        .and_then(|rate| rate.Value())
+        .unwrap_or(1.0);
+    Ok(TimelineSample {
+        position_ms: (timeline.Position()?.Duration - start).max(0) as u64 / 10000,
+        duration_ms: (end - start).max(0) as u64 / 10000,
+        updated_at: timeline.LastUpdatedTime()?.UniversalTime,
+        rate: if rate.is_finite() && rate >= 0.0 {
+            rate
+        } else {
+            1.0
+        },
+    })
+}
+#[derive(Clone, Copy)]
+enum MediaEventKind {
+    Metadata,
+    Playback,
+}
+struct MediaEvent {
+    session_generation: u64,
+    kind: MediaEventKind,
+    observed_at: i64,
+}
+struct SessionBinding {
+    session: GlobalSystemMediaTransportControlsSession,
+    props_token: i64,
+    playback_token: i64,
+    generation: u64,
+}
+impl Drop for SessionBinding {
+    fn drop(&mut self) {
+        let _ = self.session.RemoveMediaPropertiesChanged(self.props_token);
+        let _ = self.session.RemovePlaybackInfoChanged(self.playback_token);
+    }
+}
+fn bind_session(
+    session: GlobalSystemMediaTransportControlsSession,
+    generation: u64,
+    sender: &mpsc::Sender<MediaEvent>,
+) -> windows::core::Result<SessionBinding> {
+    let props_sender = sender.clone();
+    let props = TypedEventHandler::new(
+        move |_session: windows::core::Ref<'_, GlobalSystemMediaTransportControlsSession>,
+              _args| {
+            let _ = props_sender.send(MediaEvent {
+                session_generation: generation,
+                kind: MediaEventKind::Metadata,
+                observed_at: utc_ticks(),
+            });
+            Ok(())
+        },
+    );
+    let playback_sender = sender.clone();
+    let playback = TypedEventHandler::new(
+        move |_session: windows::core::Ref<'_, GlobalSystemMediaTransportControlsSession>,
+              _args| {
+            let _ = playback_sender.send(MediaEvent {
+                session_generation: generation,
+                kind: MediaEventKind::Playback,
+                observed_at: utc_ticks(),
+            });
+            Ok(())
+        },
+    );
+    let props_token = session.MediaPropertiesChanged(&props)?;
+    let playback_token = match session.PlaybackInfoChanged(&playback) {
+        Ok(token) => token,
+        Err(error) => {
+            let _ = session.RemoveMediaPropertiesChanged(props_token);
+            return Err(error);
+        }
+    };
+    Ok(SessionBinding {
+        session,
+        props_token,
+        playback_token,
+        generation,
+    })
+}
 
-/// SmtcManager 负责在独立线程中运行 SMTC 监听逻辑。
-/// 内部持有 Arc<AppHandle> 以便在回调和轮询中向前端发射事件。
 pub struct SmtcManager {
     app_handle: Arc<tauri::AppHandle>,
 }
-
 impl SmtcManager {
     pub fn new(app_handle: tauri::AppHandle) -> Self {
         Self {
             app_handle: Arc::new(app_handle),
         }
     }
-
-    /// 启动 SMTC 监听。
-    /// 使用独立操作系统线程隔离 WinRT 的同步等待，避免阻塞 Tauri 主线程。
     pub fn start(self) {
-        let app_handle = self.app_handle;
-
-        std::thread::spawn(move || {
-            let _apartment = match WinRtApartment::initialize() {
-                Ok(apartment) => apartment,
-                Err(error) => {
-                    eprintln!("[SMTC] 初始化 WinRT 失败: {:?}", error);
-                    return;
-                }
-            };
-
-            smtc_main_loop(app_handle);
+        std::thread::spawn(move || match WinRtApartment::initialize() {
+            Ok(_apartment) => smtc_main_loop(self.app_handle),
+            Err(error) => eprintln!("[SMTC] WinRT 初始化失败: {error}"),
         });
     }
 }
 
-/// SMTC 主循环（异步），负责：
-/// 1. 获取系统 SMTC 会话管理器
-/// 2. 查找 Apple Music 会话
-/// 3. 注册媒体属性变化和播放状态变化的事件回调
-/// 4. 持续轮询播放进度
-/// SMTC 状态机主循环（异步），负责：
-/// 1. Searching (寻找状态): 轮询查找目标会话，发送“等待”状态
-/// 2. Connected (连接状态): 注册事件
-/// 3. Syncing (同步状态): 每秒读取权威进度，前端在两次校准间插值
-/// 4. Disconnected (断开状态): 会话失效时注销事件并退回 Searching
-fn smtc_main_loop(app_handle: Arc<tauri::AppHandle>) {
-    let mut current_session: Option<GlobalSystemMediaTransportControlsSession> = None;
-    let mut props_token: Option<i64> = None;
-    let mut playback_token: Option<i64> = None;
-    let mut validation_ticks = 0_u8;
-
+// RPC 回调仅入队；读取、去抖、时间轴同步均在初始化过 WinRT 的单一线程执行。
+fn smtc_main_loop(app: Arc<tauri::AppHandle>) {
+    let (sender, receiver) = mpsc::channel();
+    let mut generation = 0;
     loop {
-        // Manager 在一轮生命周期内长期持有；申请失败时每秒重试。
-        let manager = match GlobalSystemMediaTransportControlsSessionManager::RequestAsync() {
-            Ok(op) => match op.get() {
-                Ok(m) => m,
-                Err(e) => {
-                    eprintln!("[SMTC] 请求 Manager 失败: {:?}", e);
-                    std::thread::sleep(Duration::from_secs(1));
-                    continue;
-                }
-            },
-            Err(e) => {
-                eprintln!("[SMTC] RequestAsync 失败: {:?}", e);
+        let manager = match GlobalSystemMediaTransportControlsSessionManager::RequestAsync()
+            .and_then(|operation| operation.get())
+        {
+            Ok(manager) => manager,
+            Err(error) => {
+                eprintln!("[SMTC] 请求会话失败: {error}");
+                enter_waiting(&app);
                 std::thread::sleep(Duration::from_secs(1));
                 continue;
             }
         };
-
-        // Manager 自身失效时跳出内层循环并重新申请。
+        let mut binding: Option<SessionBinding> = None;
+        let mut metadata_due: Option<(Instant, i64)> = None;
+        let mut stale_sample: Option<TimelineSample> = None;
+        let mut poll_due = Instant::now();
+        let mut validate_due = Instant::now();
         loop {
-            // 寻找状态 (Searching)
-            if current_session.is_none() {
+            if binding.is_none() {
                 match find_apple_music_session(&manager) {
                     Ok(Some(session)) => {
-                        println!("[SMTC] 找到目标会话，进入 Connected 状态");
-
-                        // 将会话引用存入全局变量
-                        match CURRENT_SESSION.lock() {
-                            Ok(mut guard) => *guard = Some(session.clone()),
-                            Err(error) => {
-                                eprintln!("[SMTC] 当前会话锁已损坏: {}", error);
-                                std::thread::sleep(Duration::from_secs(1));
-                                continue;
-                            }
-                        }
-
-                        // 注册 MediaPropertiesChanged
-                        let handle_for_props = app_handle.clone();
-                        let props_handler = TypedEventHandler::new(
-                            move |session_ref: windows::core::Ref<
-                                '_,
-                                GlobalSystemMediaTransportControlsSession,
-                            >,
-                                  _args| {
-                                if let Some(s) = &*session_ref {
-                                    match read_media_state(s) {
-                                        Ok(payload) => {
-                                            println!(
-                                                "[SMTC] 媒体属性变化: {} - {} ({:?})",
-                                                payload.track.title,
-                                                payload.track.artist,
-                                                payload.playback_state
-                                            );
-                                            emit_state_and_fetch_lyrics(&handle_for_props, payload);
-                                        }
-                                        Err(e) => eprintln!("[SMTC] 读取媒体属性失败: {:?}", e),
-                                    }
+                        generation += 1;
+                        match bind_session(session, generation, &sender) {
+                            Ok(new_binding) => {
+                                if let Ok(mut current) = CURRENT_SESSION.lock() {
+                                    *current = Some(new_binding.session.clone());
                                 }
-                                Ok(())
-                            },
-                        );
-
-                        // 注册 PlaybackInfoChanged
-                        let handle_for_playback = app_handle.clone();
-                        let playback_handler = TypedEventHandler::new(
-                            move |session_ref: windows::core::Ref<
-                                '_,
-                                GlobalSystemMediaTransportControlsSession,
-                            >,
-                                  _args| {
-                                if let Some(s) = &*session_ref {
-                                    if let Ok(payload) = read_media_state(s) {
-                                        println!(
-                                            "[SMTC] 播放状态变化: {:?}",
-                                            payload.playback_state
-                                        );
-                                        let payload = normalize_playable_state(payload);
-                                        emit_media_state(&handle_for_playback, &payload);
-                                        if is_unavailable_track(&payload.track) {
-                                            crate::lyrics::provider::enter_waiting_state();
-                                        }
-                                    }
-                                }
-                                Ok(())
-                            },
-                        );
-
-                        // 保存事件注册的 Token，用于后续注销
-                        let pt = match session.MediaPropertiesChanged(&props_handler) {
-                            Ok(token) => token,
+                                binding = Some(new_binding);
+                                metadata_due = Some((Instant::now(), 0));
+                                poll_due = Instant::now();
+                                stale_sample = None;
+                            }
                             Err(error) => {
-                                eprintln!("[SMTC] 注册媒体属性监听失败: {:?}", error);
-                                clear_current_session();
+                                eprintln!("[SMTC] 注册事件失败: {error}");
                                 std::thread::sleep(Duration::from_secs(1));
                                 continue;
                             }
-                        };
-                        let pbt = match session.PlaybackInfoChanged(&playback_handler) {
-                            Ok(token) => token,
-                            Err(error) => {
-                                eprintln!("[SMTC] 注册播放状态监听失败: {:?}", error);
-                                let _ = session.RemoveMediaPropertiesChanged(pt);
-                                clear_current_session();
-                                std::thread::sleep(Duration::from_secs(1));
-                                continue;
-                            }
-                        };
-
-                        // 初始触发一次状态发送和歌词检索
-                        if let Ok(timeline) = session.GetTimelineProperties() {
-                            if let (Ok(end), Ok(start)) = (timeline.EndTime(), timeline.StartTime()) {
-                                let duration_ms = (end.Duration - start.Duration).max(0) as u64 / 10_000;
-                                store_media_position(&MediaPositionPayload {
-                                    position_ms: 0,
-                                    duration_ms,
-                                });
-                                println!("[SMTC] 初始读取歌曲时长: {}ms", duration_ms);
-                            }
                         }
-                        if let Ok(payload) = read_media_state(&session) {
-                            emit_state_and_fetch_lyrics(&app_handle, payload);
-                        }
-
-                        current_session = Some(session);
-                        props_token = Some(pt);
-                        playback_token = Some(pbt);
-                        validation_ticks = 0;
                     }
                     Ok(None) => {
-                        // 未找到，发送等待状态并休眠 1000ms
-                        let payload = waiting_state();
-                        emit_media_state(&app_handle, &payload);
-                        crate::lyrics::provider::enter_waiting_state();
-                        store_media_position(&MediaPositionPayload {
-                            position_ms: 0,
-                            duration_ms: 0,
-                        });
+                        enter_waiting(&app);
                         std::thread::sleep(Duration::from_secs(1));
                         continue;
                     }
                     Err(error) => {
-                        eprintln!("[SMTC] 枚举媒体会话失败: {:?}", error);
+                        eprintln!("[SMTC] 枚举会话失败: {error}");
                         break;
                     }
                 }
             }
-
-            // 同步状态 (Syncing)
-            if let Some(session) = &current_session {
-                let timeline_res = session.GetTimelineProperties();
-                let mut is_disconnected = false;
-
-                match timeline_res {
-                    Ok(timeline) => match timeline.Position() {
-                        Ok(ts) => {
-                            let position_ticks = ts.Duration;
-                            let duration_ticks = match (timeline.EndTime(), timeline.StartTime()) {
-                                (Ok(end), Ok(start)) => end.Duration - start.Duration,
-                                _ => 0,
-                            };
-                            let position_ms = (position_ticks / 10_000).max(0) as u64;
-                            let duration_ms = (duration_ticks / 10_000).max(0) as u64;
-                            let payload = MediaPositionPayload {
-                                position_ms,
-                                duration_ms,
-                            };
-                            store_media_position(&payload);
-                            let _ = app_handle.emit("media-position-changed", &payload);
+            let connected = binding.as_ref().unwrap();
+            let mut events = Vec::new();
+            if let Ok(event) = receiver.recv_timeout(Duration::from_millis(100)) {
+                events.push(event);
+            }
+            events.extend(receiver.try_iter());
+            for event in events {
+                if event.session_generation != connected.generation {
+                    continue;
+                }
+                match event.kind {
+                    MediaEventKind::Metadata => {
+                        metadata_due = Some((
+                            Instant::now() + Duration::from_millis(400),
+                            event.observed_at,
+                        ))
+                    }
+                    MediaEventKind::Playback => {
+                        if let (Ok(info), Ok(snapshot)) = (
+                            connected.session.GetPlaybackInfo(),
+                            crate::playback::snapshot(),
+                        ) {
+                            if let Ok(status) = info.PlaybackStatus() {
+                                let mut media = snapshot.media;
+                                media.playback_state = convert_status(status);
+                                crate::playback::update_media(&app, media);
+                            }
                         }
-                        Err(e) => {
-                            eprintln!("[SMTC] 读取位置失败 (可能断开): {:?}", e);
-                            is_disconnected = true;
-                        }
-                    },
-                    Err(e) => {
-                        eprintln!("[SMTC] 获取时间轴属性失败 (可能断开): {:?}", e);
-                        is_disconnected = true;
+                        poll_due = Instant::now();
                     }
                 }
-
-                // 每秒核验一次 Manager 中的目标对象。Apple Music 重启后即使旧对象
-                // 仍能返回最后的 Timeline，也会因为对象身份不同而进入重连流程。
-                validation_ticks = validation_ticks.saturating_add(1);
-                if !is_disconnected && validation_ticks >= 4 {
-                    validation_ticks = 0;
-                    match find_apple_music_session(&manager) {
-                        Ok(Some(active)) if active.as_raw() == session.as_raw() => {}
-                        Ok(_) => {
-                            println!("[SMTC] Apple Music 会话已关闭或替换");
-                            is_disconnected = true;
+            }
+            if metadata_due.is_some_and(|(deadline, _)| Instant::now() >= deadline) {
+                let (_, observed_at) = metadata_due.take().unwrap();
+                match (
+                    read_media_state(&connected.session),
+                    read_timeline(&connected.session),
+                    read_media_state(&connected.session),
+                ) {
+                    (Ok(first), Ok(sample), Ok(second)) if first.track == second.track => {
+                        let previous = crate::playback::snapshot().ok();
+                        let changed = previous
+                            .as_ref()
+                            .is_none_or(|previous| previous.media.track != second.track);
+                        if changed {
+                            stale_sample = if observed_at > 0
+                                && sample.updated_at.saturating_add(2_000_000) < observed_at
+                            {
+                                Some(sample)
+                            } else {
+                                None
+                            };
                         }
-                        Err(error) => {
-                            eprintln!("[SMTC] 核验媒体会话失败: {:?}", error);
-                            break;
+                        let media =
+                            crate::playback::update_media(&app, normalize_playable_state(second));
+                        if is_unavailable_track(&media.track) {
+                            crate::lyrics::provider::enter_waiting_state();
+                        } else {
+                            let position = if stale_sample == Some(sample) {
+                                MediaPositionPayload::default()
+                            } else {
+                                estimate_position(
+                                    sample,
+                                    media.playback_state == PlaybackState::Playing,
+                                    utc_ticks(),
+                                )
+                            };
+                            let duration = position.duration_ms;
+                            crate::playback::update_position(&app, media.track_revision, position);
+                            crate::lyrics::provider::fetch_and_emit_lyrics(
+                                media.track,
+                                (*app).clone(),
+                                duration,
+                                media.track_revision,
+                            );
                         }
+                    }
+                    (Err(error), _, _) => {
+                        eprintln!("[SMTC] 读取元数据失败: {error}");
+                        metadata_due =
+                            Some((Instant::now() + Duration::from_millis(400), observed_at));
+                    }
+                    _ => {
+                        metadata_due =
+                            Some((Instant::now() + Duration::from_millis(200), observed_at))
                     }
                 }
-
-                // 断开状态 (Disconnected) 逻辑处理
-                if is_disconnected {
-                    println!("[SMTC] 会话已断开，执行清理，回退到 Searching 状态");
-
-                    // 优雅注销事件
-                    if let Some(t) = props_token {
-                        let _ = session.RemoveMediaPropertiesChanged(t);
+            }
+            if metadata_due.is_none() && Instant::now() >= poll_due {
+                poll_due = Instant::now() + Duration::from_secs(1);
+                match (
+                    read_timeline(&connected.session),
+                    crate::playback::snapshot(),
+                ) {
+                    (Ok(sample), Ok(snapshot)) => {
+                        if stale_sample.is_some_and(|stale| stale != sample) {
+                            stale_sample = None;
+                        }
+                        if stale_sample != Some(sample) {
+                            let position = estimate_position(
+                                sample,
+                                snapshot.media.playback_state == PlaybackState::Playing,
+                                utc_ticks(),
+                            );
+                            let duration = position.duration_ms;
+                            crate::playback::update_position(
+                                &app,
+                                snapshot.media.track_revision,
+                                position,
+                            );
+                            if !is_unavailable_track(&snapshot.media.track) {
+                                crate::lyrics::provider::fetch_and_emit_lyrics(
+                                    snapshot.media.track,
+                                    (*app).clone(),
+                                    duration,
+                                    snapshot.media.track_revision,
+                                );
+                            }
+                        }
                     }
-                    if let Some(t) = playback_token {
-                        let _ = session.RemovePlaybackInfoChanged(t);
+                    _ => {
+                        binding = None;
+                        metadata_due = None;
+                        enter_waiting(&app);
+                        continue;
                     }
-
-                    current_session = None;
-                    props_token = None;
-                    playback_token = None;
-
-                    // 清空全局引用
-                    clear_current_session();
-                    let waiting = waiting_state();
-                    emit_media_state(&app_handle, &waiting);
-                    crate::lyrics::provider::enter_waiting_state();
-                    let empty_position = MediaPositionPayload {
-                        position_ms: 0,
-                        duration_ms: 0,
-                    };
-                    store_media_position(&empty_position);
-                    let _ = app_handle.emit("media-position-changed", &empty_position);
-                } else {
-                    // 前端使用单调时钟插值，这里只需每秒提供一次权威校准。
-                    std::thread::sleep(Duration::from_secs(1));
+                }
+            }
+            if Instant::now() >= validate_due {
+                validate_due = Instant::now() + Duration::from_secs(4);
+                match find_apple_music_session(&manager) {
+                    Ok(Some(active)) if active.as_raw() == connected.session.as_raw() => {}
+                    Ok(_) => {
+                        binding = None;
+                        metadata_due = None;
+                        enter_waiting(&app);
+                    }
+                    Err(_) => break,
                 }
             }
         }
-
-        // Manager 失效，先清理当前会话，再回到外层循环重建 Manager。
-        if let Some(session) = current_session.take() {
-            if let Some(token) = props_token.take() {
-                let _ = session.RemoveMediaPropertiesChanged(token);
-            }
-            if let Some(token) = playback_token.take() {
-                let _ = session.RemovePlaybackInfoChanged(token);
-            }
-        }
-        clear_current_session();
+        drop(binding);
+        enter_waiting(&app);
         std::thread::sleep(Duration::from_secs(1));
     }
 }
 
-// =============================================================================
-// Tauri 命令
-// 这些命令通过全局 CURRENT_SESSION 访问当前活跃的 SMTC 会话，
-// 调用 WinRT 异步方法的 .get() 同步等待版本。
-// =============================================================================
-
-/// 返回后端当前快照。前端在完成事件监听注册后调用，避免启动阶段的事件丢失。
 #[command]
 pub fn get_media_snapshot() -> Result<MediaSnapshotPayload, String> {
-    let media = CURRENT_MEDIA_STATE
-        .lock()
-        .map_err(|error| error.to_string())?
-        .clone()
-        .unwrap_or_else(waiting_state);
-    let position = CURRENT_MEDIA_POSITION
-        .lock()
-        .map_err(|error| error.to_string())?
-        .clone();
-
-    Ok(MediaSnapshotPayload { media, position })
+    crate::playback::snapshot()
 }
-
 /// 切换播放/暂停状态
 #[command]
 pub fn play_pause() -> Result<(), String> {
@@ -649,6 +608,84 @@ mod tests {
     use super::{clean_artist, is_unavailable_track, parse_apple_music_metadata};
 
     #[test]
+    #[ignore = "requires Apple Music playing and live catalog access; only reads playback"]
+    fn matches_live_apple_cache_without_controlling_playback() {
+        let _apartment = super::WinRtApartment::initialize().unwrap();
+        let manager=windows::Media::Control::GlobalSystemMediaTransportControlsSessionManager::RequestAsync().unwrap().get().unwrap();
+        let session = super::find_apple_music_session(&manager)
+            .unwrap()
+            .expect("请先在 Apple Music 播放歌曲");
+        let media = super::read_media_state(&session).unwrap();
+        let sample = super::read_timeline(&session).unwrap();
+        let estimated = super::estimate_position(
+            sample,
+            media.playback_state == crate::domain::PlaybackState::Playing,
+            super::utc_ticks(),
+        );
+        println!(
+            "[实机核对] track={:?}, raw={}ms, estimated={}ms, duration={}ms",
+            media.track, sample.position_ms, estimated.position_ms, sample.duration_ms
+        );
+        let config = crate::config::AppConfig::default();
+        let current = tauri::async_runtime::block_on(crate::lyrics::cache::fetch_lyrics(
+            &media.track,
+            std::time::SystemTime::now(),
+            sample.duration_ms,
+            &config,
+        ))
+        .unwrap();
+        if let Some(candidate) = current {
+            assert_eq!(candidate.document.track, media.track);
+            println!("[实机核对] 当前曲目匹配成功: {}", candidate.track_id);
+        } else {
+            println!("[实机核对] 当前曲目没有匹配缓存，未采用上一首歌词");
+        }
+        let root = crate::lyrics::cache_scanner::cache_root().unwrap();
+        let candidates = crate::lyrics::cache_scanner::scan_candidates(&root, 0).unwrap();
+        let ids = candidates
+            .iter()
+            .map(|candidate| candidate.track_id.clone())
+            .collect::<Vec<_>>();
+        let metadata = tauri::async_runtime::block_on(crate::lyrics::am_api::fetch_song_metadata(
+            &ids,
+            &config.am_api_tokens,
+        ))
+        .unwrap();
+        let cached_song = candidates
+            .iter()
+            .find_map(|candidate| metadata.get(&candidate.track_id))
+            .expect("需要至少一份可核验的歌词缓存");
+        let candidate = tauri::async_runtime::block_on(crate::lyrics::cache::fetch_lyrics(
+            &cached_song.track,
+            std::time::SystemTime::now(),
+            cached_song.duration_ms.unwrap_or(0),
+            &config,
+        ))
+        .unwrap()
+        .expect("已核验缓存应能正确读取");
+        assert_eq!(candidate.document.track, cached_song.track);
+        println!(
+            "[实机核对] 已核验 lyricsId={}, lines={}",
+            candidate.track_id,
+            candidate.document.lines.len()
+        );
+        let wrong = crate::domain::TrackIdentity {
+            title: format!("{}__AMDL不存在的曲目", cached_song.track.title),
+            ..cached_song.track.clone()
+        };
+        assert!(
+            tauri::async_runtime::block_on(crate::lyrics::cache::fetch_lyrics(
+                &wrong,
+                std::time::SystemTime::now(),
+                cached_song.duration_ms.unwrap_or(0),
+                &config
+            ))
+            .unwrap()
+            .is_none()
+        );
+    }
+
+    #[test]
     fn rejects_empty_and_connecting_metadata() {
         assert!(is_unavailable_track(
             &crate::domain::TrackIdentity::default()
@@ -708,10 +745,14 @@ mod tests {
     }
 
     #[test]
-    fn removes_album_suffix_with_cjk_separator_and_spacing_difference() {
+    fn preserves_cjk_character_in_artist_and_title() {
         assert_eq!(
-            clean_artist("蔡健雅 一 Goodbye &Hello".into(), Some("Goodbye & Hello")),
-            "蔡健雅"
+            parse_apple_music_metadata("一生一世".into(), "李一桐".into(), Some("专辑".into())),
+            crate::domain::TrackIdentity {
+                title: "一生一世".into(),
+                artist: "李一桐".into(),
+                album: Some("专辑".into())
+            }
         );
     }
 
@@ -720,6 +761,45 @@ mod tests {
         assert_eq!(
             clean_artist("Artist – Album".into(), Some("Album")),
             "Artist"
+        );
+    }
+
+    #[test]
+    fn stale_timeline_is_extrapolated_without_periodic_rewind_and_seek_still_works() {
+        let sample = super::TimelineSample {
+            position_ms: 10000,
+            duration_ms: 200000,
+            updated_at: 100000000,
+            rate: 1.0,
+        };
+        assert_eq!(
+            super::estimate_position(sample, true, 110000000).position_ms,
+            11000
+        );
+        assert_eq!(
+            super::estimate_position(sample, true, 120000000).position_ms,
+            12000
+        );
+        assert_eq!(
+            super::estimate_position(sample, false, 120000000).position_ms,
+            10000
+        );
+        let seek = super::TimelineSample {
+            position_ms: 3000,
+            updated_at: 120000000,
+            ..sample
+        };
+        assert_eq!(
+            super::estimate_position(seek, true, 120000000).position_ms,
+            3000
+        );
+        let faster = super::TimelineSample {
+            rate: 2.0,
+            ..sample
+        };
+        assert_eq!(
+            super::estimate_position(faster, true, 110000000).position_ms,
+            12000
         );
     }
 }

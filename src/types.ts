@@ -31,16 +31,29 @@ export interface LyricsDocument {
 export interface MediaStatePayload {
   track: TrackIdentity;
   playback_state: PlaybackState;
+  track_revision: number;
+  revision: number;
 }
 
 export interface MediaPositionPayload {
   position_ms: number;
   duration_ms: number;
+  playback_rate: number;
+  track_revision: number;
+  revision: number;
 }
 
 export interface MediaSnapshotPayload {
   media: MediaStatePayload;
   position: MediaPositionPayload;
+  lyrics: LyricsSnapshotPayload;
+}
+
+export interface LyricsSnapshotPayload {
+  document: LyricsDocument | null;
+  status: LyricsStatusPayload | null;
+  track_revision: number;
+  revision: number;
 }
 
 export type LyricsLoadState = 'loading' | 'loaded' | 'notFound' | 'error';

@@ -31,24 +31,54 @@ pub struct QqLyricsPreview {
 pub async fn fetch_lyrics(
     track: &TrackIdentity,
 ) -> Result<Option<LyricsDocument>, Box<dyn Error + Send + Sync>> {
+    fetch_matched_lyrics(track, 0).await
+}
+
+pub async fn fetch_matched_lyrics(
+    track: &TrackIdentity,
+    duration_ms: u64,
+) -> Result<Option<LyricsDocument>, Box<dyn Error + Send + Sync>> {
     println!("[QQ] 开始获取歌词: track={track:?}");
     let candidates = search_songs(track).await?;
-    let selected = candidates
+    let mut ranked = rank_candidates(&candidates, track, duration_ms);
+    ranked.truncate(3);
+    let mut last_error = None;
+    for (score, selected) in ranked {
+        println!(
+            "[QQ] 尝试可信候选: mid={}, score={score}",
+            selected.song_mid
+        );
+        match fetch_lyrics_by_song(track, selected).await {
+            Ok(Some(document)) => return Ok(Some(document)),
+            Ok(None) => {}
+            Err(error) => last_error = Some(error),
+        }
+    }
+    if let Some(error) = last_error {
+        return Err(error);
+    }
+    Ok(None)
+}
+
+fn rank_candidates<'a>(
+    candidates: &'a [QqSongCandidate],
+    track: &TrackIdentity,
+    duration_ms: u64,
+) -> Vec<(u16, &'a QqSongCandidate)> {
+    let mut ranked = candidates
         .iter()
-        .find(|candidate| candidate_matches(candidate, track))
-        .or_else(|| candidates.first());
-    let Some(selected) = selected else {
-        return Ok(None);
-    };
-    println!(
-        "[QQ] 自动选中候选: title={:?}, artist={:?}, mid={:?}, id={}, matched={}",
-        selected.track.title,
-        selected.track.artist,
-        selected.song_mid,
-        selected.song_id,
-        candidate_matches(selected, track)
-    );
-    fetch_lyrics_by_song(track, selected).await
+        .filter_map(|candidate| {
+            let score = crate::lyrics::matching::score_candidate(
+                track,
+                duration_ms,
+                &candidate.track,
+                candidate.duration_ms,
+            );
+            score.acceptable.then_some((score.total, candidate))
+        })
+        .collect::<Vec<_>>();
+    ranked.sort_by_key(|(score, _)| std::cmp::Reverse(*score));
+    ranked
 }
 
 pub async fn search_songs(
@@ -256,11 +286,6 @@ fn parse_candidate(song: &Value) -> Option<QqSongCandidate> {
     })
 }
 
-fn candidate_matches(candidate: &QqSongCandidate, track: &TrackIdentity) -> bool {
-    normalize(&candidate.track.title) == normalize(&track.title)
-        && normalize(&candidate.track.artist).contains(&normalize(&track.artist))
-}
-
 fn plain_lyrics(value: &str) -> String {
     value
         .lines()
@@ -437,6 +462,36 @@ mod tests {
     use super::{fetch_lyrics, parse_candidate, parse_lrc, plain_lyrics, qq_artist_query};
     use crate::domain::{LyricsSource, TrackIdentity};
     use serde_json::json;
+
+    #[test]
+    fn unrelated_first_candidate_is_never_used_as_fallback() {
+        let track = TrackIdentity {
+            title: "Song".into(),
+            artist: "Artist".into(),
+            album: None,
+        };
+        let candidates = vec![
+            super::QqSongCandidate {
+                song_id: 1,
+                song_mid: "wrong".into(),
+                track: TrackIdentity {
+                    artist: "Other".into(),
+                    ..track.clone()
+                },
+                duration_ms: Some(180000),
+            },
+            super::QqSongCandidate {
+                song_id: 2,
+                song_mid: "correct".into(),
+                track: track.clone(),
+                duration_ms: Some(180000),
+            },
+        ];
+        let ranked = super::rank_candidates(&candidates, &track, 180000);
+        assert_eq!(ranked.len(), 1);
+        assert_eq!(ranked[0].1.song_mid, "correct");
+        assert!(super::rank_candidates(&candidates[..1], &track, 180000).is_empty());
+    }
 
     #[test]
     fn parses_lrc_timestamps() {
