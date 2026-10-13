@@ -106,17 +106,6 @@ impl AppConfig {
             }
         }
         self.lyrics_sources.sort_by_key(|source| source.priority);
-        if !self.lyrics_sources.iter().any(|source| source.enabled) {
-            if let Some(source) = self
-                .lyrics_sources
-                .iter_mut()
-                .find(|source| source.id == "manual")
-            {
-                source.enabled = true;
-            } else if let Some(source) = self.lyrics_sources.first_mut() {
-                source.enabled = true;
-            }
-        }
         self
     }
 
@@ -131,24 +120,47 @@ impl AppConfig {
 
 pub fn read_config() -> Result<AppConfig, String> {
     let value = crate::settings_store::read()?;
-    match value.get("config").cloned() {
+    let mut config = match value.get("config").cloned() {
         Some(value) => serde_json::from_value(value)
             .map(|config: AppConfig| config.normalize())
             .map_err(|error| format!("配置结构解析失败: {error}")),
         None => Ok(AppConfig::default()),
+    }?;
+    if let Some(enabled) = value
+        .get("autoConvertTraditionalToSimplified")
+        .and_then(serde_json::Value::as_bool)
+    {
+        config.auto_chs = enabled;
     }
+    Ok(config)
 }
 
 pub fn write_config(config: &AppConfig) -> Result<(), String> {
     let value = serde_json::to_value(config).map_err(|error| format!("配置序列化失败: {error}"))?;
     crate::settings_store::update(|root| {
         root.insert("config".into(), value);
+        root.insert(
+            "autoConvertTraditionalToSimplified".into(),
+            config.auto_chs.into(),
+        );
     })
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn normalization_respects_disabled_sources() {
+        let mut config = AppConfig::default();
+        for source in &mut config.lyrics_sources {
+            source.enabled = false;
+        }
+        assert!(config
+            .normalize()
+            .lyrics_sources
+            .iter()
+            .all(|source| !source.enabled));
+    }
     #[test]
     fn token_defaults_are_identical_for_new_and_legacy_configuration() {
         let deserialized: AmApiTokens = serde_json::from_str("{}").unwrap();

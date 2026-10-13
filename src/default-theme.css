@@ -1,0 +1,28 @@
+.amdl-lyrics {
+  font-family: "Microsoft YaHei UI", "Segoe UI", sans-serif;
+  font-size: 32px;
+  font-weight: 800;
+  font-style: normal;
+  text-align: center;
+  opacity: 1;
+}
+.amdl-lyrics-stack { width: 100%; }
+.amdl-lyric-line {
+  color: #d7d7de;
+  background: none;
+  background-clip: border-box;
+  -webkit-background-clip: border-box;
+  -webkit-text-fill-color: currentColor;
+  -webkit-text-stroke: 0 transparent;
+  text-shadow: none;
+}
+.amdl-lyric-line.is-active {
+  color: transparent;
+  background: linear-gradient(90deg, #fb7185, #8b5cf6);
+  background-clip: text;
+  -webkit-background-clip: text;
+  -webkit-text-fill-color: transparent;
+  -webkit-text-stroke: 0 transparent;
+  text-shadow: none;
+}
+.amdl-progress-fill { background: linear-gradient(90deg, #fb7185, #d946ef); }

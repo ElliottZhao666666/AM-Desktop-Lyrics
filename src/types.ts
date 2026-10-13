@@ -1,3 +1,4 @@
+import type { ThemeEditor } from './theme';
 export type PlaybackState = 'Playing' | 'Paused' | 'Stopped' | 'Unknown';
 
 export interface TrackIdentity {
@@ -6,7 +7,7 @@ export interface TrackIdentity {
   album: string | null;
 }
 
-export type LyricsSource = 'appleMusicApi' | 'appleMusicCache' | 'qqMusic' | 'amllDb' | 'dummy';
+export type LyricsSource = 'appleMusicApi' | 'appleMusicCache' | 'qqMusic' | 'manual' | 'amllDb' | 'dummy';
 
 export interface LyricWord {
   text: string;
@@ -81,6 +82,7 @@ export interface AppSettings {
   localCacheLimit: number;
   themeName: string;
   themeCss: string;
+  themeEditor?: ThemeEditor | null;
   lyricsTimeOffsetMs: number;
   rememberLyricsWindowBounds: boolean;
   lyricsWindowBounds: LyricsWindowBounds | null;
@@ -89,6 +91,7 @@ export interface AppSettings {
 export interface ThemeFile {
   name: string;
   css: string;
+  editor?: ThemeEditor | null;
 }
 
 export interface QqSongCandidate {

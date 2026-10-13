@@ -1,6 +1,5 @@
 use crate::domain::{LyricsDocument, LyricsLoadState, LyricsStatusPayload, TrackIdentity};
 use crate::lyrics::qq_music::{QqLyricsPreview, QqSongCandidate};
-use crate::lyrics::ttml_parser::parse_ttml as parse_api_ttml;
 use crate::lyrics::{cache, custom_pool, qq_music};
 use std::sync::Mutex;
 use std::time::{Duration, Instant, SystemTime};
@@ -115,7 +114,12 @@ fn start_fetch(
     };
     publish_status(&app, &track, LyricsLoadState::Loading, None, token);
     let task = tauri::async_runtime::spawn(async move {
-        let result = fetch_document(&track, duration_ms, SystemTime::now()).await;
+        let result = tokio::time::timeout(
+            Duration::from_secs(90),
+            fetch_document(&track, duration_ms, SystemTime::now(), !force),
+        )
+        .await
+        .unwrap_or_else(|_| Err("歌词获取超时，请检查网络或手动重试".into()));
         match result {
             Ok(Some(document)) => {
                 finish_loaded(&app, &document, token);
@@ -143,15 +147,21 @@ async fn fetch_document(
     track: &TrackIdentity,
     duration_ms: u64,
     requested_at: SystemTime,
+    use_automatic_cache: bool,
 ) -> Result<Option<LyricsDocument>, String> {
-    match custom_pool::get(track) {
-        Ok(Some(document)) => return Ok(Some(document)),
-        Ok(None) => {}
-        Err(error) => eprintln!("[CustomLyrics] 读取失败，继续自动匹配: {error}"),
-    }
     let config = crate::config::read_config()?.normalize();
+    if config.source_enabled("manual") {
+        match custom_pool::get(track) {
+            Ok(Some(document)) => return Ok(Some(document)),
+            Ok(None) => {}
+            Err(error) => eprintln!("[CustomLyrics] 读取失败，继续自动匹配: {error}"),
+        }
+    }
     if let Some(document) = local_cache_get(track, &config, duration_ms) {
-        return Ok(Some(document));
+        // 保存渠道/Token 后重新按优先级获取；手动选择仍作为用户明确的覆盖结果。
+        if use_automatic_cache || document.source == crate::domain::LyricsSource::Manual {
+            return Ok(Some(document));
+        }
     }
     let mut channels = config
         .lyrics_sources
@@ -233,34 +243,18 @@ async fn fetch_apple_music_api(
     {
         return Err("逐字歌词响应与已核验歌曲时长不符".into());
     }
-    let lines = parse_api_ttml(&ttml)
-        .map_err(|error| error.to_string())?
-        .into_iter()
-        .map(|line| crate::domain::LyricLine {
-            begin_ms: line.begin.round() as u64,
-            end_ms: line.end.map(|end| end.round() as u64),
-            text: line.text,
-            words: line
-                .words
-                .unwrap_or_default()
-                .into_iter()
-                .map(|word| crate::domain::LyricWord {
-                    text: word.text,
-                    begin_ms: word.begin.round() as u64,
-                    end_ms: word.end.round() as u64,
-                })
-                .collect(),
-        })
-        .collect::<Vec<_>>();
-    if lines.is_empty() {
+    let mut document = crate::lyrics::ttml::parse_ttml_with_translation(
+        track.clone(),
+        crate::domain::LyricsSource::AppleMusicApi,
+        &ttml,
+        config.auto_chs,
+    )
+    .map_err(|error| error.to_string())?;
+    if document.lines.is_empty() {
         return Ok(None);
     }
-    Ok(Some(LyricsDocument {
-        track: track.clone(),
-        source: crate::domain::LyricsSource::AppleMusicApi,
-        lines,
-        duration_ms: candidate.document.duration_ms,
-    }))
+    document.duration_ms = candidate.document.duration_ms.or(document.duration_ms);
+    Ok(Some(document))
 }
 
 fn extract_ttml(body: &str) -> Option<String> {
@@ -314,6 +308,12 @@ fn finish_loaded(app: &AppHandle, document: &LyricsDocument, token: RequestToken
     if state.generation != token.generation {
         return false;
     }
+    let displayed = cache::convert_to_simplified(
+        document.clone(),
+        crate::config::read_config()
+            .map(|config| config.auto_chs)
+            .unwrap_or(false),
+    );
     if crate::playback::update_lyrics(
         app,
         token.track_revision,
@@ -322,7 +322,7 @@ fn finish_loaded(app: &AppHandle, document: &LyricsDocument, token: RequestToken
             state: LyricsLoadState::Loaded,
             message: None,
         },
-        Some(document.clone()),
+        Some(displayed),
     ) {
         state.retry_at = None;
         local_cache_put(document);
@@ -397,7 +397,9 @@ fn validate_track(track: &TrackIdentity) -> Result<(), String> {
 
 #[tauri::command]
 pub async fn search_qq_lyrics(track: TrackIdentity) -> Result<Vec<QqSongCandidate>, String> {
-    validate_track(&track)?;
+    if track.title.trim().is_empty() {
+        return Err("请输入歌曲名".into());
+    }
     qq_music::search_songs(&track)
         .await
         .map_err(|error| format!("搜索 Q音歌曲失败: {error}"))
@@ -463,10 +465,19 @@ async fn apply_selected(
     candidate: QqSongCandidate,
     permanent: bool,
 ) -> Result<(), String> {
+    if !crate::config::read_config()?.source_enabled("manual") {
+        return Err("手动匹配渠道已禁用".into());
+    }
     let (token, _) = begin_forced_request(&track, &app)?;
     let result = qq_music::fetch_lyrics_by_song(&track, &candidate)
         .await
         .map_err(|error| error.to_string());
+    let result = result.map(|document| {
+        document.map(|mut document| {
+            document.source = crate::domain::LyricsSource::Manual;
+            document
+        })
+    });
     let result = match result {
         Ok(Some(document)) if permanent => {
             let guard = REQUESTS.lock().map_err(|_| "歌词请求锁已损坏")?;
@@ -491,18 +502,7 @@ fn local_cache_path() -> Option<std::path::PathBuf> {
 }
 
 fn local_cache_limit() -> usize {
-    let Ok(path) = crate::app_paths::settings_file() else {
-        return 10;
-    };
-    let Ok(encoded) = std::fs::read_to_string(path) else {
-        return 10;
-    };
-    let Ok(bytes) =
-        base64::Engine::decode(&base64::engine::general_purpose::STANDARD, encoded.trim())
-    else {
-        return 10;
-    };
-    serde_json::from_slice::<serde_json::Value>(&bytes)
+    crate::settings_store::read()
         .ok()
         .and_then(|value| {
             value
@@ -519,13 +519,24 @@ fn load_local_cache() -> Vec<LyricsDocument> {
     };
     std::fs::read_to_string(path)
         .ok()
-        .and_then(|text| decode_local_cache(&text))
+        .and_then(|text| {
+            let mut entries = decode_local_cache(&text)?;
+            let stored: VerifiedLyricsCache = serde_json::from_str(&text).ok()?;
+            let enabled = crate::config::read_config().ok()?.auto_chs;
+            if stored.auto_chs != enabled {
+                entries.retain(|entry| entry.source != crate::domain::LyricsSource::AppleMusicApi);
+            }
+            entries.truncate(local_cache_limit());
+            Some(entries)
+        })
         .unwrap_or_default()
 }
 
 #[derive(serde::Serialize, serde::Deserialize)]
 struct VerifiedLyricsCache {
     match_version: u8,
+    #[serde(default)]
+    auto_chs: bool,
     entries: Vec<LyricsDocument>,
 }
 fn decode_local_cache(text: &str) -> Option<Vec<LyricsDocument>> {
@@ -540,30 +551,38 @@ fn local_cache_get(
 ) -> Option<LyricsDocument> {
     let mut cache = LOCAL_LYRICS_CACHE.lock().ok()?;
     let entries = cache.get_or_insert_with(load_local_cache);
-    let index = entries.iter().position(|entry| {
-        entry.track == *track
-            && entry.duration_ms.is_none_or(|duration| {
-                duration_ms == 0
-                    || duration.abs_diff(duration_ms)
-                        <= crate::lyrics::matching::MAX_DURATION_DIFFERENCE_MS
-            })
-            && match entry.source {
-                crate::domain::LyricsSource::AppleMusicApi => {
-                    config.source_enabled("appleMusicApi")
-                }
-                crate::domain::LyricsSource::AppleMusicCache => {
-                    config.source_enabled("appleMusicCache")
-                }
-                crate::domain::LyricsSource::QqMusic => config.source_enabled("qqMusic"),
-                _ => true,
-            }
-    })?;
+    let index = entries
+        .iter()
+        .position(|entry| cache_entry_matches(entry, track, config, duration_ms))?;
     let document = entries.remove(index);
     entries.insert(0, document.clone());
     persist_local_cache(entries);
     Some(document)
 }
 
+fn cache_entry_matches(
+    entry: &LyricsDocument,
+    track: &TrackIdentity,
+    config: &crate::config::AppConfig,
+    duration_ms: u64,
+) -> bool {
+    entry.track == *track
+        && (entry.source == crate::domain::LyricsSource::Manual
+            || entry.duration_ms.is_none_or(|duration| {
+                duration_ms == 0
+                    || duration.abs_diff(duration_ms)
+                        <= crate::lyrics::matching::MAX_DURATION_DIFFERENCE_MS
+            }))
+        && match entry.source {
+            crate::domain::LyricsSource::AppleMusicApi => config.source_enabled("appleMusicApi"),
+            crate::domain::LyricsSource::AppleMusicCache => {
+                config.source_enabled("appleMusicCache")
+            }
+            crate::domain::LyricsSource::QqMusic => config.source_enabled("qqMusic"),
+            crate::domain::LyricsSource::Manual => config.source_enabled("manual"),
+            _ => false,
+        }
+}
 fn local_cache_put(document: &LyricsDocument) {
     let Ok(mut cache) = LOCAL_LYRICS_CACHE.lock() else {
         return;
@@ -576,6 +595,24 @@ fn local_cache_put(document: &LyricsDocument) {
     println!("[LyricsCache] 已写入自身缓存: entries={}", entries.len());
 }
 
+pub fn apply_cache_settings(limit: usize, conversion_changed: bool) {
+    if conversion_changed {
+        enter_waiting_state();
+    }
+    let Ok(mut cache) = LOCAL_LYRICS_CACHE.lock() else {
+        return;
+    };
+    let entries = cache.get_or_insert_with(load_local_cache);
+    apply_cache_policy(entries, limit, conversion_changed);
+    persist_local_cache(entries);
+}
+
+fn apply_cache_policy(entries: &mut Vec<LyricsDocument>, limit: usize, conversion_changed: bool) {
+    if conversion_changed {
+        entries.retain(|entry| entry.source != crate::domain::LyricsSource::AppleMusicApi);
+    }
+    entries.truncate(limit.clamp(1, LOCAL_CACHE_LIMIT));
+}
 fn persist_local_cache(entries: &[LyricsDocument]) {
     let Some(path) = local_cache_path() else {
         eprintln!("[LyricsCache] LOCALAPPDATA 不可用，无法持久化自身缓存");
@@ -588,6 +625,9 @@ fn persist_local_cache(entries: &[LyricsDocument]) {
     }
     match serde_json::to_string(&VerifiedLyricsCache {
         match_version: crate::lyrics::matching::MATCH_VERSION,
+        auto_chs: crate::config::read_config()
+            .map(|config| config.auto_chs)
+            .unwrap_or(false),
         entries: entries.to_vec(),
     }) {
         Ok(text) => {
@@ -602,11 +642,60 @@ fn persist_local_cache(entries: &[LyricsDocument]) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    fn document(source: crate::domain::LyricsSource) -> LyricsDocument {
+        LyricsDocument {
+            track: TrackIdentity {
+                title: "Song".into(),
+                artist: "Artist".into(),
+                album: Some("Album".into()),
+            },
+            source,
+            lines: Vec::new(),
+            duration_ms: Some(180000),
+        }
+    }
+    #[test]
+    fn manual_cache_is_independent_of_qq_and_respects_manual_switch() {
+        let manual = document(crate::domain::LyricsSource::Manual);
+        let mut config = crate::config::AppConfig::default();
+        config
+            .lyrics_sources
+            .iter_mut()
+            .find(|source| source.id == "qqMusic")
+            .unwrap()
+            .enabled = false;
+        assert!(cache_entry_matches(&manual, &manual.track, &config, 220000));
+        config
+            .lyrics_sources
+            .iter_mut()
+            .find(|source| source.id == "manual")
+            .unwrap()
+            .enabled = false;
+        assert!(!cache_entry_matches(
+            &manual,
+            &manual.track,
+            &config,
+            180000
+        ));
+        let qq = document(crate::domain::LyricsSource::QqMusic);
+        assert!(!cache_entry_matches(&qq, &qq.track, &config, 180000));
+    }
+    #[test]
+    fn conversion_invalidates_localized_api_and_limit_applies_immediately() {
+        let mut entries = vec![
+            document(crate::domain::LyricsSource::AppleMusicApi),
+            document(crate::domain::LyricsSource::Manual),
+            document(crate::domain::LyricsSource::QqMusic),
+        ];
+        apply_cache_policy(&mut entries, 1, true);
+        assert_eq!(entries.len(), 1);
+        assert_eq!(entries[0].source, crate::domain::LyricsSource::Manual);
+    }
     #[test]
     fn legacy_unverified_cache_cannot_reintroduce_wrong_matches() {
         assert!(decode_local_cache("[]").is_none());
         assert_eq!(
-            decode_local_cache(r#"{"match_version":1,"entries":[]}"#),
+            decode_local_cache(r#"{"match_version":2,"entries":[]}"#),
             Some(Vec::new())
         );
         assert!(decode_local_cache(r#"{"match_version":0,"entries":[]}"#).is_none());

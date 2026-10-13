@@ -8,11 +8,11 @@
 
 [![Tauri](https://img.shields.io/badge/Tauri-2.0-24C8D8?logo=tauri&logoColor=white)](#)
 [![Vue](https://img.shields.io/badge/Vue-3.x-4FC08D?logo=vuedotjs&logoColor=white)](#)
-[![Rust](https://img.shields.io/badge/Rust-1.70+-000000?logo=rust&logoColor=white)](#)
+[![Rust](https://img.shields.io/badge/Rust-1.90+-000000?logo=rust&logoColor=white)](#)
 [![Platform](https://img.shields.io/badge/Platform-Windows_10%20%7C%2011-0078D6?logo=windows&logoColor=white)](#)
 [![License](https://img.shields.io/badge/License-MIT-green.svg)](#)
 
-[官网 (amdl.ybjun.com)](https://amdl.ybjun.com) • [反馈 Bug](mailto://main@ybjun.com) • [提交特性请求](#)
+[官网 (amdl.ybjun.com)](https://amdl.ybjun.com) • [反馈 Bug](mailto:main@ybjun.com) • [提交特性请求](https://github.com/ElliottZhao666666/AM-Desktop-Lyrics/issues/new)
 
 </div>
 
@@ -26,13 +26,13 @@ Windows 原生 Apple Music 客户端虽然体验优秀，但一直缺失国人�
 
 ## 🚀 核心特性
 
-- **原生级无感运行**：不入侵客户端，纯读缓存和 SMTC 状态，绝对安全稳定。
+- **原生级无感运行**：通过 SMTC 读取播放状态，并结合客户端缓存与歌词接口匹配当前歌曲。
 - **高度视觉自定义**：
   - 🎨 彻底解耦的外观配置，支持多种效果。
-  - 📂 支持自定义/系统字体加载，支持导出导入 `.amdlcss` 主题文件。
+  - 📂 支持选择系统字体或填写已安装的字体名称，支持导出导入 `.amdlcss` 主题文件。
   - 🎁 内置多款预设主题（暖橙日落、青绿森林、海蓝霓虹、纯白极简等）。
 - **精准歌词解析**：
-  - 🎤 支持 TTML/LRC 逐词高亮解析。
+  - 🎤 支持 TTML 逐词高亮，以及普通 LRC 逐行时间轴、多时间标签和 offset。
   - 🔍 内置 QQ 音乐搜刮兜底机制，AM 歌词获取不到时也不用担心。
   - 🛠️ 强大的**手动匹配中心**与**永久自定义歌词池**，一次纠错，终身受用。
   - 🌏 支持 AM 默认获取的繁体歌词自动转简体。
@@ -53,9 +53,9 @@ Windows 原生 Apple Music 客户端虽然体验优秀，但一直缺失国人�
 ## 📥 安装与使用 (Installation & Usage)
 
 ### 下载
-前往 [Releases](#) 页面下载最新版本的安装包：
+前往 [Releases](https://github.com/ElliottZhao666666/AM-Desktop-Lyrics/releases) 页面下载最新版本的安装包：
 - 提供标准的 `.exe` 安装程序。
-- 也提供绿色版免安装可执行文件。
+- 可用安装包及其他产物以 Release 附件为准。
 
 ### 快速开始
 1. 确保你的电脑已开启并正在运行 Windows 版 **Apple Music**。
@@ -70,13 +70,13 @@ Windows 原生 Apple Music 客户端虽然体验优秀，但一直缺失国人�
 
 **环境要求：**
 - Node.js (推荐 v18+) & pnpm
-- Rust 工具链 (cargo)
+- Rust 1.90+ 工具链 (cargo)
 - Windows SDK 构建工具
 
 **构建步骤：**
 ```bash
 # 1. 克隆代码仓库
-git clone [https://github.com/ElliottZhao666666/AM-Desktop-Lyrics.git](https://github.com/ElliottZhao666666/AM-Desktop-Lyrics.git)
+git clone https://github.com/ElliottZhao666666/AM-Desktop-Lyrics.git
 cd AM-Desktop-Lyrics
 
 # 2. 安装前端依赖
@@ -85,7 +85,11 @@ pnpm install
 # 3. 本地开发调试
 pnpm tauri dev
 
-# 4. 编译 Release 版本
+# 4. 运行前后端回归测试
+pnpm test
+cargo test --manifest-path src-tauri/Cargo.toml --lib
+
+# 5. 编译 Release 版本
 pnpm tauri build
 ```
 
@@ -107,11 +111,15 @@ pnpm tauri build
 
 [ ] 双行歌词支持
 
-[ ] TTML 逐词支持、平滑滚动与算法优化
+[x] TTML 逐词解析与渐进高亮；当前行定位已使用二分查找
 
-[ ] 更多自定义主题和歌词渠道支持
+[ ] 平滑滚动、固定双行和更多展示模式
 
-[ ] 完善更新服务后端
+[x] 多款内置主题与自定义 CSS 导入导出
+
+[ ] 集成 AMLL-DB、网易云和更多歌词渠道
+
+[ ] 更新服务与实际签名升级链路的端到端验收（服务端不在本仓库）
 
 ......
 

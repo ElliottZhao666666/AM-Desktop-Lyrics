@@ -33,6 +33,7 @@
       :artist="mediaArtist"
       :is-playing="isPlaying"
       :position-ms="displayPositionMs"
+      :duration-ms="durationMs"
       :lyrics="currentLyrics"
       :lyrics-state="lyricsState"
       :lyrics-message="lyricsMessage"

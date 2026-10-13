@@ -31,8 +31,8 @@
             <section class="editor-section">
               <h2>整体文字</h2>
               <div class="control-grid">
-                <label class="wide">字体<select v-model="editor.fontFamily" @change="syncCss"><option v-for="font in systemFonts" :key="font" :value="font">{{ font }}</option><option value="custom">自定义字体…</option></select></label>
-                <label v-if="editor.fontFamily === 'custom'" class="wide">自定义字体<input v-model="customFontFamily" placeholder="例如：霞鹜文楷" @input="syncCustomFont" /></label>
+                <label class="wide">字体<select v-model="fontChoice" @change="syncFontChoice"><option v-for="font in systemFonts" :key="font" :value="font">{{ font }}</option><option value="custom">自定义字体…</option></select></label>
+                <label v-if="fontChoice === 'custom'" class="wide">自定义字体<input v-model="customFontFamily" placeholder="例如：霞鹜文楷" @input="syncCustomFont" /></label>
                 <label>字号<input v-model.number="editor.fontSize" type="number" min="12" max="72" @input="syncCss" /></label>
                 <label>字重<select v-model.number="editor.fontWeight" @change="syncCss"><option :value="400">常规</option><option :value="600">半粗</option><option :value="700">粗体</option><option :value="800">特粗</option><option :value="900">黑体</option></select></label>
                 <label>对齐<select v-model="editor.align" @change="syncCss"><option value="left">左对齐</option><option value="center">居中</option><option value="right">右对齐</option></select></label>
@@ -62,7 +62,7 @@
               <div class="preview-progress"><div class="amdl-progress-fill" style="width: 62%" /></div>
             </div>
             <div class="source-header"><span>CSS 源码</span><button class="text-command" @click="resetDefault">恢复默认</button></div>
-            <textarea v-model="settings.themeCss" class="css-editor" spellcheck="false" @input="selectedPreset = 'custom'" />
+            <textarea v-model="settings.themeCss" class="css-editor" spellcheck="false" @input="onCssInput" />
           </div>
         </div>
         <component :is="'style'">{{ settings.themeCss }}</component>
@@ -191,7 +191,7 @@ import { relaunch } from '@tauri-apps/plugin-process';
 import { check } from '@tauri-apps/plugin-updater';
 import { Check, CloudDownload, Database, FileText, FolderOpen, Info, Palette, RefreshCw, Save, Search, Settings2, Globe, GitBranch } from '@lucide/vue';
 import type { AppConfig, AppSettings, MediaSnapshotPayload, MediaStatePayload, QqLyricsPreview, QqSongCandidate, RuntimeLyricsTimeOffset, ThemeFile, TrackIdentity } from '../types';
-import { buildThemeCss, cloneEditor, DEFAULT_EDITOR, PRESETS, type ThemeEditor } from '../theme';
+import { buildThemeCss, cloneEditor, mergeThemeCss, restoreThemeEditor, DEFAULT_EDITOR, DEFAULT_THEME_CSS, PRESETS, type ThemeEditor } from '../theme';
 import TextStyleEditor from './TextStyleEditor.vue';
 import appIcon from '../../app-icon.png';
 
@@ -203,7 +203,7 @@ const settings = ref<AppSettings>({
   autoConvertTraditionalToSimplified: true,
   localCacheLimit: 10,
   themeName: 'AMDL 默认',
-  themeCss: buildThemeCss(DEFAULT_EDITOR),
+  themeCss: DEFAULT_THEME_CSS,
   lyricsTimeOffsetMs: 0,
   rememberLyricsWindowBounds: false,
   lyricsWindowBounds: null,
@@ -211,6 +211,12 @@ const settings = ref<AppSettings>({
 const editor = ref<ThemeEditor>(cloneEditor(DEFAULT_EDITOR));
 const selectedPreset = ref('default');
 const customFontFamily = ref('');
+const fontChoice = ref('Microsoft YaHei UI');
+let previousEditor = cloneEditor(DEFAULT_EDITOR);
+let savedSettings: AppSettings | null = null;
+let savedConfig: AppConfig | null = null;
+let offsetBeforeEdit: number | null = null;
+let lastOwnOffsetRevision = -1;
 const systemFonts = ref<string[]>(['Microsoft YaHei UI']);
 const message = ref('');
 const logText = ref('');
@@ -219,12 +225,21 @@ const matchQuery = ref({ title: '', artist: '', album: '' });
 const matchCandidates = ref<QqSongCandidate[]>([]);
 const selectedCandidate = ref<QqSongCandidate | null>(null);
 const previewText = ref('');
-const matchBusy = ref(false);
+const searchBusy = ref(false);
+const previewBusy = ref(false);
+const actionBusy = ref(false);
+const matchBusy = computed(() => searchBusy.value || previewBusy.value || actionBusy.value);
+let searchGeneration = 0;
+let previewGeneration = 0;
+let actionGeneration = 0;
 const isCheckingUpdate = ref(false);
 const currentSection = computed(() => sections.find((item) => item.id === activeSection.value) ?? sections[0]);
 const canMatch = computed(() => Boolean(currentTrack.value.title.trim() && currentTrack.value.artist.trim() && currentTrack.value.title !== '等待播放...'));
 let unlistenLyricsTimeOffset: UnlistenFn | null = null;
 let unlistenMediaState: UnlistenFn | null = null;
+let unlistenOpened: UnlistenFn | null = null;
+let unlistenClosed: UnlistenFn | null = null;
+let windowLifecycle = Promise.resolve();
 let mediaStateRevision = -1;
 let lyricsTimeOffsetRevision = -1;
 let latestLyricsTimeOffset: RuntimeLyricsTimeOffset = { offsetMs: 0, revision: -1 };
@@ -252,6 +267,13 @@ onMounted(async () => {
       applyLyricsTimeOffset(event.payload);
     });
     unlistenMediaState = await listen<MediaStatePayload>('media-state-changed', (event) => applyMediaState(event.payload));
+    unlistenOpened = await listen('settings-opened', () => { windowLifecycle = windowLifecycle.then(reloadSettings).catch((error) => { message.value = String(error); }); });
+    unlistenClosed = await listen('settings-closed', () => { windowLifecycle = windowLifecycle.then(discardEdits).catch((error) => { message.value = String(error); }); });
+    await reloadSettings();
+  } catch (error) { message.value = String(error); }
+});
+
+async function reloadSettings() {
     const [loadedSettings, loadedConfig, runtimeOffset, fonts, mediaSnapshot] = await Promise.allSettled([
       invoke<AppSettings>('get_settings'),
       invoke<AppConfig>('get_config'),
@@ -269,11 +291,12 @@ onMounted(async () => {
     if (latestLyricsTimeOffset.revision >= 0) applyLyricsTimeOffset(latestLyricsTimeOffset);
     if (fonts.status === 'fulfilled' && fonts.value.length > 0) systemFonts.value = fonts.value;
     if (mediaSnapshot.status === 'fulfilled') applyMediaState(mediaSnapshot.value.media);
-    if (!systemFonts.value.includes(editor.value.fontFamily)) systemFonts.value.unshift(editor.value.fontFamily);
-  } catch (error) { message.value = String(error); }
-});
+    hydrateTheme();
+    savedSettings = JSON.parse(JSON.stringify(settings.value));
+    savedConfig = JSON.parse(JSON.stringify(config.value));
+}
 
-onUnmounted(() => { unlistenLyricsTimeOffset?.(); unlistenMediaState?.(); });
+onUnmounted(() => { unlistenLyricsTimeOffset?.(); unlistenMediaState?.(); unlistenOpened?.(); unlistenClosed?.(); });
 
 function applyMediaState(payload: MediaStatePayload) {
   if (payload.revision < mediaStateRevision) return;
@@ -285,6 +308,8 @@ function updateCurrentTrack(track: TrackIdentity) {
   const changed = track.title !== currentTrack.value.title || track.artist !== currentTrack.value.artist || track.album !== currentTrack.value.album;
   currentTrack.value = track;
   if (!changed) return;
+  searchGeneration++; previewGeneration++; actionGeneration++;
+  searchBusy.value = false; previewBusy.value = false; actionBusy.value = false;
   matchQuery.value = { title: track.title === '等待播放...' ? '' : track.title, artist: track.artist, album: track.album ?? '' };
   matchCandidates.value = [];
   selectedCandidate.value = null;
@@ -302,67 +327,93 @@ function formatDuration(durationMs: number | null) {
 }
 
 async function rescanLocalLyrics() {
-  matchBusy.value = true;
+  const generation = ++actionGeneration;
+  actionBusy.value = true;
   try {
     const found = await invoke<boolean>('rescan_local_lyrics', { track: currentTrack.value });
-    await showMessage(found ? '本地缓存已刷新' : '本地缓存中没有找到当前歌曲歌词', { title: 'AMDL', kind: 'info' });
-  } catch (error) { await showMessage(String(error), { title: '扫描失败', kind: 'error' }); }
-  finally { matchBusy.value = false; }
+    if (generation === actionGeneration) await showMessage(found ? '本地缓存已刷新' : '本地缓存中没有找到当前歌曲歌词', { title: 'AMDL', kind: 'info' });
+  } catch (error) { if (generation === actionGeneration) await showMessage(String(error), { title: '扫描失败', kind: 'error' }); }
+  finally { if (generation === actionGeneration) actionBusy.value = false; }
 }
 
 async function refetchQqLyrics() {
-  matchBusy.value = true;
+  const generation = ++actionGeneration;
+  actionBusy.value = true;
   try {
     const found = await invoke<boolean>('refetch_qq_lyrics', { track: currentTrack.value });
-    await showMessage(found ? 'Q音歌词已刷新' : 'Q音没有找到匹配歌词', { title: 'AMDL', kind: 'info' });
-  } catch (error) { await showMessage(String(error), { title: '获取失败', kind: 'error' }); }
-  finally { matchBusy.value = false; }
+    if (generation === actionGeneration) await showMessage(found ? 'Q音歌词已刷新' : 'Q音没有找到匹配歌词', { title: 'AMDL', kind: 'info' });
+  } catch (error) { if (generation === actionGeneration) await showMessage(String(error), { title: '获取失败', kind: 'error' }); }
+  finally { if (generation === actionGeneration) actionBusy.value = false; }
 }
 
 async function searchLyrics() {
-  matchBusy.value = true;
+  const generation = ++searchGeneration;
+  previewGeneration++; previewBusy.value = false;
+  searchBusy.value = true;
   matchCandidates.value = [];
   selectedCandidate.value = null;
   previewText.value = '';
   try {
-    matchCandidates.value = await invoke<QqSongCandidate[]>('search_qq_lyrics', { track: queryTrack() });
+    const candidates = await invoke<QqSongCandidate[]>('search_qq_lyrics', { track: queryTrack() });
+    if (generation !== searchGeneration) return;
+    matchCandidates.value = candidates;
     if (!matchCandidates.value.length) await showMessage('没有找到候选歌曲', { title: 'AMDL', kind: 'info' });
-  } catch (error) { await showMessage(String(error), { title: '搜索失败', kind: 'error' }); }
-  finally { matchBusy.value = false; }
+  } catch (error) { if (generation === searchGeneration) await showMessage(String(error), { title: '搜索失败', kind: 'error' }); }
+  finally { if (generation === searchGeneration) searchBusy.value = false; }
 }
 
 async function selectCandidate(candidate: QqSongCandidate) {
+  const generation = ++previewGeneration;
   selectedCandidate.value = candidate;
   previewText.value = '';
-  matchBusy.value = true;
+  previewBusy.value = true;
   try {
     const preview = await invoke<QqLyricsPreview>('preview_qq_lyrics', { candidate });
-    if (selectedCandidate.value?.songMid === candidate.songMid) previewText.value = preview.lyricsText;
-  } catch (error) { await showMessage(String(error), { title: '预览失败', kind: 'error' }); }
-  finally { matchBusy.value = false; }
+    if (generation === previewGeneration) previewText.value = preview.lyricsText;
+  } catch (error) { if (generation === previewGeneration) await showMessage(String(error), { title: '预览失败', kind: 'error' }); }
+  finally { if (generation === previewGeneration) previewBusy.value = false; }
 }
 
 async function applySelectedLyrics() {
   if (!selectedCandidate.value) return;
-  matchBusy.value = true;
+  const generation = ++actionGeneration;
+  actionBusy.value = true;
   try {
     await invoke('apply_manual_lyrics', { track: currentTrack.value, candidate: selectedCandidate.value });
-    await showMessage('歌词已应用并覆盖普通缓存', { title: 'AMDL', kind: 'info' });
-  } catch (error) { await showMessage(String(error), { title: '应用失败', kind: 'error' }); }
-  finally { matchBusy.value = false; }
+    if (generation === actionGeneration) await showMessage('歌词已应用并覆盖普通缓存', { title: 'AMDL', kind: 'info' });
+  } catch (error) { if (generation === actionGeneration) await showMessage(String(error), { title: '应用失败', kind: 'error' }); }
+  finally { if (generation === actionGeneration) actionBusy.value = false; }
 }
 
 async function applyAndAlwaysUseSelectedLyrics() {
   if (!selectedCandidate.value) return;
-  matchBusy.value = true;
-  try { await invoke('apply_custom_lyrics', { track: currentTrack.value, candidate: selectedCandidate.value }); await showMessage('歌词已应用并保存为永久匹配', { title: 'AMDL', kind: 'info' }); }
-  catch (error) { await showMessage(String(error), { title: '应用失败', kind: 'error' }); }
-  finally { matchBusy.value = false; }
+  const generation = ++actionGeneration;
+  actionBusy.value = true;
+  try { await invoke('apply_custom_lyrics', { track: currentTrack.value, candidate: selectedCandidate.value }); if (generation === actionGeneration) await showMessage('歌词已应用并保存为永久匹配', { title: 'AMDL', kind: 'info' }); }
+  catch (error) { if (generation === actionGeneration) await showMessage(String(error), { title: '应用失败', kind: 'error' }); }
+  finally { if (generation === actionGeneration) actionBusy.value = false; }
 }
 
-function syncCss() { settings.value.themeCss = buildThemeCss(editor.value); selectedPreset.value = 'custom'; }
+function hydrateTheme() {
+  editor.value = restoreThemeEditor(settings.value.themeCss, settings.value.themeEditor);
+  previousEditor = cloneEditor(editor.value);
+  fontChoice.value = systemFonts.value.includes(editor.value.fontFamily) ? editor.value.fontFamily : 'custom';
+  customFontFamily.value = editor.value.fontFamily;
+  selectedPreset.value = PRESETS.find((preset) => preset.name === settings.value.themeName && buildThemeCss(preset.editor) === settings.value.themeCss)?.id ?? 'custom';
+}
+function syncCss() {
+  settings.value.themeCss = mergeThemeCss(settings.value.themeCss, previousEditor, editor.value);
+  settings.value.themeEditor = cloneEditor(editor.value);
+  previousEditor = cloneEditor(editor.value);
+  selectedPreset.value = 'custom';
+}
+function syncFontChoice() {
+  editor.value.fontFamily = fontChoice.value === 'custom' ? customFontFamily.value || 'Microsoft YaHei UI' : fontChoice.value;
+  syncCss();
+}
 function syncCustomFont() { editor.value.fontFamily = customFontFamily.value || 'Microsoft YaHei UI'; syncCss(); }
-function applyPreset() { const preset = PRESETS.find((item) => item.id === selectedPreset.value); if (!preset) return; editor.value = cloneEditor(preset.editor); settings.value.themeName = preset.name; settings.value.themeCss = buildThemeCss(editor.value); }
+function onCssInput() { settings.value.themeEditor = null; hydrateTheme(); selectedPreset.value = 'custom'; }
+function applyPreset() { const preset = PRESETS.find((item) => item.id === selectedPreset.value); if (!preset) return; editor.value = cloneEditor(preset.editor); settings.value.themeName = preset.name; settings.value.themeCss = buildThemeCss(editor.value); settings.value.themeEditor = cloneEditor(editor.value); previousEditor = cloneEditor(editor.value); fontChoice.value = systemFonts.value.includes(editor.value.fontFamily) ? editor.value.fontFamily : 'custom'; customFontFamily.value = editor.value.fontFamily; }
 function resetDefault() { selectedPreset.value = 'default'; applyPreset(); }
 
 function applyRuntimeLyricsOffset() {
@@ -372,9 +423,12 @@ function applyRuntimeLyricsOffset() {
   if (!Number.isFinite(value)) return;
   settings.value.lyricsTimeOffsetMs = Math.trunc(value);
   const offsetMs = settings.value.lyricsTimeOffsetMs;
+  if (offsetBeforeEdit === null) offsetBeforeEdit = latestLyricsTimeOffset.offsetMs;
   pendingLyricsOffsetUpdate = pendingLyricsOffsetUpdate.then(async () => {
     try {
-      applyLyricsTimeOffset(await invoke<RuntimeLyricsTimeOffset>('set_runtime_lyrics_time_offset', { offsetMs }));
+      const payload = await invoke<RuntimeLyricsTimeOffset>('set_runtime_lyrics_time_offset', { offsetMs });
+      lastOwnOffsetRevision = payload.revision;
+      applyLyricsTimeOffset(payload);
     } catch (error) {
       message.value = String(error);
     }
@@ -399,12 +453,12 @@ function handleContextMenu(event: MouseEvent) {
 async function importTheme() {
   const path = await open({ multiple: false, filters: [{ name: 'AMDL 主题', extensions: ['amdlcss'] }] });
   if (!path) return;
-  try { const theme = await invoke<ThemeFile>('import_theme_file', { path }); settings.value.themeName = theme.name; settings.value.themeCss = theme.css; selectedPreset.value = 'custom'; message.value = `已加载 ${theme.name}`; } catch (error) { message.value = String(error); }
+  try { const theme = await invoke<ThemeFile>('import_theme_file', { path }); settings.value.themeName = theme.name; settings.value.themeCss = theme.css; settings.value.themeEditor = theme.editor; hydrateTheme(); selectedPreset.value = 'custom'; message.value = `已加载 ${theme.name}`; } catch (error) { message.value = String(error); }
 }
 async function exportTheme() {
   const path = await save({ defaultPath: `${settings.value.themeName || 'AMDL主题'}.amdlcss`, filters: [{ name: 'AMDL 主题', extensions: ['amdlcss'] }] });
   if (!path) return;
-  try { await invoke('export_theme_file', { path, name: settings.value.themeName, css: settings.value.themeCss }); message.value = '主题已导出'; } catch (error) { message.value = String(error); }
+  try { await invoke('export_theme_file', { path, name: settings.value.themeName, css: settings.value.themeCss, editor: settings.value.themeEditor ?? cloneEditor(editor.value) }); message.value = '主题已导出'; } catch (error) { message.value = String(error); }
 }
 async function refreshLog() {
   try {
@@ -430,16 +484,27 @@ async function saveSettings() {
   }
   await pendingLyricsOffsetUpdate;
   settings.value.lyricsTimeOffsetMs = latestLyricsTimeOffset.offsetMs;
-  try { await invoke('save_settings', { settings: settings.value }); message.value = '已应用'; setTimeout(() => { message.value = ''; }, 1800); } catch (error) { message.value = String(error); }
+  try { await invoke('save_settings', { settings: settings.value }); config.value.autoChs = settings.value.autoConvertTraditionalToSimplified; savedSettings = JSON.parse(JSON.stringify(settings.value)); if (savedConfig) savedConfig.autoChs = config.value.autoChs; offsetBeforeEdit = null; message.value = '已应用'; setTimeout(() => { message.value = ''; }, 1800); } catch (error) { message.value = String(error); }
 }
 async function saveAll() {
   if (activeSection.value === 'lyricsSources') {
-    try { await invoke('save_config', { config: config.value }); message.value = '配置已保存并生效'; } catch (error) { message.value = String(error); }
+    try { await invoke('save_config', { config: config.value }); settings.value.autoConvertTraditionalToSimplified = config.value.autoChs; if (savedSettings) savedSettings.autoConvertTraditionalToSimplified = config.value.autoChs; savedConfig = JSON.parse(JSON.stringify(config.value)); message.value = '配置已保存并生效'; } catch (error) { message.value = String(error); }
     return;
   }
   await saveSettings();
 }
-function closeWindow() { getCurrentWindow().hide(); }
+async function discardEdits() {
+  await pendingLyricsOffsetUpdate;
+  if (offsetBeforeEdit !== null && latestLyricsTimeOffset.revision === lastOwnOffsetRevision) {
+    applyLyricsTimeOffset(await invoke<RuntimeLyricsTimeOffset>('set_runtime_lyrics_time_offset', { offsetMs: offsetBeforeEdit, expectedRevision: lastOwnOffsetRevision }));
+  }
+  offsetBeforeEdit = null;
+  if (savedSettings) settings.value = JSON.parse(JSON.stringify(savedSettings));
+  if (savedConfig) config.value = JSON.parse(JSON.stringify(savedConfig));
+  if (latestLyricsTimeOffset.revision >= 0) applyLyricsTimeOffset(latestLyricsTimeOffset);
+  hydrateTheme();
+}
+async function closeWindow() { try { await discardEdits(); await getCurrentWindow().hide(); } catch (error) { message.value = String(error); } }
 async function openExternal(url: string) {
   try { await openUrl(url); } catch (error) { message.value = String(error); }
 }

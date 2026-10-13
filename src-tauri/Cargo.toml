@@ -5,6 +5,7 @@ description = "Apple Music Desktop Lyrics"
 authors = ["月半菌"]
 homepage = "https://amdl.ybjun.com"
 edition = "2021"
+rust-version = "1.90"
 
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
@@ -41,3 +42,6 @@ winreg = "0.56.0"
 tauri-plugin-updater = "2.11.0"
 tauri-plugin-process = "2.3.1"
 
+
+chrono = { version = "0.4", default-features = false, features = ["clock"] }
+tauri-plugin-single-instance = "2"

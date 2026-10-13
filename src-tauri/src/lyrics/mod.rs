@@ -3,6 +3,7 @@ pub mod amll_db;
 pub mod cache;
 pub mod cache_scanner;
 pub mod custom_pool;
+pub mod lrc;
 pub mod matching;
 pub mod models;
 pub mod provider;

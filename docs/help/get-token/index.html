@@ -1,0 +1,26 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Apple Music Token 设置说明 · AMDL</title>
+  <style>body{max-width:760px;margin:40px auto;padding:0 24px;font:16px/1.8 system-ui,sans-serif;color:#24242a;background:#fafafc}a{color:#bd2c76}code{background:#eee;padding:2px 5px;border-radius:4px}h1{font-size:28px}h2{font-size:21px}</style>
+</head>
+<body>
+  <p><a href="../../">返回 AMDL 官网</a></p>
+  <h1>Apple Music Token 设置说明</h1>
+  <p>AMDL 的官方逐字歌词渠道需要授权信息。设置中的两个字段对应请求头 <code>Authorization</code> 和 <code>Media-User-Token</code>；普通客户端缓存和 QQ 音乐渠道不依赖用户 Token。</p>
+  <h2>填写自己的授权信息</h2>
+  <ol>
+    <li>在自己的浏览器打开 <a href="https://music.apple.com/">Apple Music 网页播放器</a>，登录自己的账户并播放可用歌曲。</li>
+    <li>打开浏览器开发者工具的 Network（网络）面板，刷新页面，查看播放器发出的 Apple Music 请求。可尝试按 <code>amp-api.music.apple.com</code> 筛选。</li>
+    <li>在请求头中找到 <code>Authorization</code> 和 <code>Media-User-Token</code>。网页版本和请求类型可能不同，并非每个请求都有这两个字段。</li>
+    <li>在 AMDL「歌词渠道」展开 Token 设置，将授权值填入对应字段。Authorization 包含 <code>Bearer</code> 前缀时保留完整值。</li>
+    <li>点击「保存并生效」。当前歌曲会重新检索歌词；歌词不存在、账户授权或接口限制仍可能导致没有逐字结果。</li>
+  </ol>
+  <p>Token 会过期。遇到授权失败时，重新登录网页播放器并更新设置。不要把 Token 粘贴进公开 Issue、日志截图或主题文件。</p>
+  <h2>开发者接入</h2>
+  <p>开发者 Token 与用户 Token 的正式获取流程请参阅 <a href="https://developer.apple.com/documentation/applemusicapi/user-authentication-for-musickit">Apple MusicKit 用户授权文档</a>。AMDL 目前不提供应用内登录或自动续期。</p>
+  <p>此页随仓库的静态官网发布；仅修改本地文件不会更新线上站点。</p>
+</body>
+</html>

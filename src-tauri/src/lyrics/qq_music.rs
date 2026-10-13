@@ -176,7 +176,7 @@ pub async fn fetch_lyrics_by_song(
     let client = create_client()?;
     let lyric = fetch_lyric_text(&client, candidate).await?;
     println!("[QQ] 歌词文本已取得: utf8_length={}", lyric.len());
-    let lines = parse_lrc(&lyric);
+    let lines = crate::lyrics::lrc::parse_lrc(&lyric, candidate.duration_ms);
     if lines.is_empty() {
         println!("[QQ] LRC 解析完成但没有有效时间轴歌词行");
         return Ok(None);
@@ -217,22 +217,13 @@ async fn fetch_lyric_text(
         }
     });
     println!("[QQ] 请求统一歌词接口: mid={song_mid:?}, id={song_id}");
-    let value = post_api(&client, &lyric_body).await?;
-    let lyric = match ensure_api_success(&value, "req_0", "歌词") {
-        Ok(()) => match value
-            .pointer("/req_0/data/lyric")
-            .and_then(Value::as_str)
-            .filter(|lyric| !lyric.is_empty())
-        {
-            Some(encoded) => {
-                println!("[QQ] 统一歌词接口命中: base64_length={}", encoded.len());
-                String::from_utf8(BASE64.decode(encoded)?)?
-            }
-            None => {
-                println!("[QQ] 统一歌词接口成功但歌词为空，转入兼容接口");
-                fetch_legacy_lyric(&client, song_mid).await?
-            }
-        },
+    let primary = async {
+        let value = post_api(&client, &lyric_body).await?;
+        decode_primary_lyric(&value)
+    }
+    .await;
+    let lyric = match primary {
+        Ok(lyric) => lyric,
         Err(error) => {
             eprintln!("[Lyrics] {error}，回退 QQ 音乐兼容歌词接口");
             fetch_legacy_lyric(&client, song_mid).await?
@@ -241,14 +232,24 @@ async fn fetch_lyric_text(
     Ok(lyric)
 }
 
+fn decode_primary_lyric(value: &Value) -> Result<String, Box<dyn Error + Send + Sync>> {
+    ensure_api_success(value, "req_0", "歌词")?;
+    let encoded = value
+        .pointer("/req_0/data/lyric")
+        .and_then(Value::as_str)
+        .filter(|value| !value.is_empty())
+        .ok_or("QQ 音乐统一接口歌词为空")?;
+    Ok(String::from_utf8(BASE64.decode(encoded)?)?)
+}
+
 fn create_client() -> Result<Client, Box<dyn Error + Send + Sync>> {
     let client = Client::builder()
-        .connect_timeout(Duration::from_secs(12))
-        .timeout(Duration::from_secs(30))
+        .connect_timeout(Duration::from_secs(5))
+        .timeout(Duration::from_secs(15))
         .http1_only()
         .user_agent("AMDL/0.9.0")
         .build()?;
-    println!("[QQ] HTTP 客户端已创建: http1_only=true, connect_timeout=12s, timeout=30s");
+    println!("[QQ] HTTP 客户端已创建: http1_only=true, connect_timeout=5s, timeout=15s");
     Ok(client)
 }
 
@@ -287,10 +288,9 @@ fn parse_candidate(song: &Value) -> Option<QqSongCandidate> {
 }
 
 fn plain_lyrics(value: &str) -> String {
-    value
-        .lines()
-        .filter_map(|line| line.rsplit_once(']').map(|(_, text)| text.trim()))
-        .filter(|line| !line.is_empty())
+    parse_lrc(value)
+        .into_iter()
+        .map(|line| line.text)
         .collect::<Vec<_>>()
         .join("\n")
 }
@@ -432,29 +432,7 @@ async fn post_api<T: Serialize + ?Sized>(
 }
 
 fn parse_lrc(value: &str) -> Vec<LyricLine> {
-    let mut lines = value
-        .lines()
-        .filter_map(|line| {
-            let end = line.find(']')?;
-            let timestamp = line.get(1..end)?;
-            let mut parts = timestamp.split(':');
-            let minutes = parts.next()?.parse::<u64>().ok()?;
-            let seconds = parts.next()?.parse::<f64>().ok()?;
-            let begin_ms = minutes * 60_000 + (seconds * 1000.0).round() as u64;
-            let text = line.get(end + 1..)?.trim().to_string();
-            (!text.is_empty()).then_some(LyricLine {
-                begin_ms,
-                end_ms: None,
-                words: Vec::new(),
-                text,
-            })
-        })
-        .collect::<Vec<_>>();
-    lines.sort_by_key(|line| line.begin_ms);
-    for index in 0..lines.len().saturating_sub(1) {
-        lines[index].end_ms = Some(lines[index + 1].begin_ms);
-    }
-    lines
+    crate::lyrics::lrc::parse_lrc(value, None)
 }
 
 #[cfg(test)]
@@ -530,9 +508,26 @@ mod tests {
 
     #[test]
     fn extracts_plain_lyrics_without_timestamps() {
+        assert_eq!(plain_lyrics("[00:01.00]A [B] C"), "A [B] C");
         assert_eq!(
             plain_lyrics("[00:01.00]第一行\n[00:03.50] 第二行\n[ar:歌手]\n"),
             "第一行\n第二行"
+        );
+    }
+
+    #[test]
+    fn primary_lyric_empty_or_invalid_encoding_is_an_error_for_fallback() {
+        assert!(
+            super::decode_primary_lyric(&json!({"req_0":{"code":0,"data":{"lyric":""}}})).is_err()
+        );
+        assert!(
+            super::decode_primary_lyric(&json!({"req_0":{"code":0,"data":{"lyric":"!!!"}}}))
+                .is_err()
+        );
+        assert_eq!(
+            super::decode_primary_lyric(&json!({"req_0":{"code":0,"data":{"lyric":"SGVsbG8="}}}))
+                .unwrap(),
+            "Hello"
         );
     }
 

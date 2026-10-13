@@ -3,7 +3,7 @@ use ferrous_opencc::{config::BuiltinConfig, OpenCC};
 use std::collections::BTreeSet;
 use std::sync::OnceLock;
 
-pub const MATCH_VERSION: u8 = 1;
+pub const MATCH_VERSION: u8 = 2;
 pub const MAX_DURATION_DIFFERENCE_MS: u64 = 8_000;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

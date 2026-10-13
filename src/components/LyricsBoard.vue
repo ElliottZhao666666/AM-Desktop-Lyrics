@@ -8,10 +8,13 @@
         <div class="amdl-lyric-line is-active">{{ displayText }}</div>
       </template>
       <template v-else-if="displayLines.length">
-        <div v-for="line in displayLines" :key="`${line.begin_ms}-${line.text}`" class="amdl-lyric-line" :class="{ 'is-active': isLineActive(line), 'has-word-timeline': Boolean(line.words?.length) }">
+        <div v-for="line in displayLines" :key="`${line.begin_ms}-${line.text}`" class="amdl-lyric-line" :class="{ 'is-active': !line.words?.length && isLineActive(line) }">
           <template v-if="line.words?.length">
-            <span v-for="(word, wordIndex) in line.words" :key="`${word.begin_ms}-${wordIndex}`" class="amdl-lyric-word" :style="wordStyle(word)">
-              <span v-if="wordProgress(word) > 0" class="amdl-lyric-word-highlight" :class="{ 'is-active': true }">{{ word.text }}</span>{{ word.text }}
+            <span v-for="(word, wordIndex) in line.words" :key="`${word.begin_ms}-${wordIndex}`" class="relative inline-block">
+              <span class="amdl-lyric-line inline-block whitespace-pre"
+                    :style="{ clipPath: `inset(0 0 0 ${wordProgress(word) * 100}%)` }">{{ word.text }}</span>
+              <span class="amdl-lyric-line is-active absolute inset-0 whitespace-pre"
+                    :style="{ clipPath: `inset(0 calc(100% - ${wordProgress(word) * 100}%) 0 0)` }">{{ word.text }}</span>
             </span>
           </template>
           <template v-else>{{ line.text }}</template>
@@ -32,6 +35,7 @@ const props = defineProps<{
   artist: string;
   isPlaying: boolean;
   positionMs: number;
+  durationMs?: number;
   lyrics: LyricsDocument | null;
   lyricsState: LyricsLoadState;
   lyricsMessage: string | null;
@@ -40,43 +44,67 @@ const props = defineProps<{
 /** 计算当前应该高亮显示的歌词 */
 const INTERLUDE_GAP_MS = 8_000;
 
-const activeLineIndex = computed(() => {
-  if (!props.lyrics?.lines.length || props.positionMs < props.lyrics.lines[0].begin_ms) return -1;
-  let index = 0;
-  for (let i = 1; i < props.lyrics.lines.length; i += 1) {
-    if (props.lyrics.lines[i].begin_ms > props.positionMs) break;
-    index = i;
+const timeline = computed(() => {
+  const lines = props.lyrics?.lines ?? [];
+  const trackEnd = props.durationMs && props.durationMs > 0 ? props.durationMs : props.lyrics?.duration_ms;
+  const nextBegins: (number | undefined)[] = [];
+  let nextBegin: number | undefined;
+  for (let index = lines.length - 1; index >= 0; index--) {
+    if (index + 1 < lines.length && lines[index + 1].begin_ms > lines[index].begin_ms) nextBegin = lines[index + 1].begin_ms;
+    nextBegins[index] = nextBegin;
   }
-  return index;
+  let prefixEnd = 0;
+  const entries = lines.map((line, index) => {
+    const wordEnd = line.words.length ? Math.max(...line.words.map((word) => word.end_ms)) : null;
+    const end = line.end_ms ?? wordEnd ?? nextBegins[index] ?? trackEnd ?? Infinity;
+    prefixEnd = Math.max(prefixEnd, end);
+    return { line, end, prefixEnd };
+  });
+  return entries;
+});
+
+const activeLineIndex = computed(() => {
+  const lines = props.lyrics?.lines ?? [];
+  let left = 0, right = lines.length;
+  while (left < right) {
+    const middle = Math.floor((left + right) / 2);
+    if (lines[middle].begin_ms <= props.positionMs) left = middle + 1;
+    else right = middle;
+  }
+  return left - 1;
 });
 
 const currentLines = computed(() => {
-  if (!props.lyrics) return [];
-  return props.lyrics.lines
-    .filter((line) => line.begin_ms <= props.positionMs && (line.end_ms === null || line.end_ms > props.positionMs))
-    .slice(-3);
+  const active = [];
+  for (let index = activeLineIndex.value; index >= 0 && timeline.value[index].prefixEnd > props.positionMs; index -= 1) {
+    const entry = timeline.value[index];
+    if (entry.end > props.positionMs) active.unshift(entry.line);
+    if (active.length === 3) break;
+  }
+  return active;
 });
 
 const displayLines = computed(() => {
   if (currentLines.value.length) return currentLines.value;
   if (activeLineIndex.value < 0 || !props.lyrics) return [];
+  if (activeLineIndex.value === props.lyrics.lines.length - 1) return [];
   return [props.lyrics.lines[activeLineIndex.value]];
 });
 
-const displayMode = computed<'status' | 'intro' | 'interlude' | 'line'>(() => {
+const displayMode = computed<'status' | 'intro' | 'interlude' | 'outro' | 'line'>(() => {
   if (props.lyricsState !== 'loaded' || !props.lyrics?.lines.length) return 'status';
   if (activeLineIndex.value < 0) return 'intro';
-  const line = currentLines.value[0] ?? props.lyrics.lines[activeLineIndex.value];
+  if (currentLines.value.length) return 'line';
+  const entry = timeline.value[activeLineIndex.value];
   const next = props.lyrics.lines[activeLineIndex.value + 1];
-  if (!next) return 'line';
-  const lineEnd = line.end_ms ?? line.begin_ms;
-  if (next.begin_ms - lineEnd >= INTERLUDE_GAP_MS && props.positionMs >= lineEnd) return 'interlude';
+  if (!next) return 'outro';
+  if (next.begin_ms - entry.end >= INTERLUDE_GAP_MS) return 'interlude';
   return 'line';
 });
 
 const displayText = computed(() => {
   if (props.title === '等待播放...' || (!props.title.trim() && !props.artist.trim())) return '等待播放...';
-  if (displayMode.value === 'intro') return [props.title, props.artist].filter(Boolean).join(' - ');
+  if (displayMode.value === 'intro' || displayMode.value === 'outro') return [props.title, props.artist].filter(Boolean).join(' - ');
   if (displayMode.value === 'interlude') return '● ● ●';
   if (props.lyricsState === 'loading') return '正在搜索歌词...';
   if (props.lyricsState === 'notFound') return '暂无匹配歌词';
@@ -85,7 +113,7 @@ const displayText = computed(() => {
 });
 
 function isLineActive(line: { begin_ms: number; end_ms: number | null }) {
-  return props.lyrics?.lines[activeLineIndex.value] === line;
+  return currentLines.value.some((active) => active === line);
 }
 
 function wordProgress(word: LyricWord) {
@@ -93,26 +121,4 @@ function wordProgress(word: LyricWord) {
   return Math.max(0, Math.min(1, (props.positionMs - word.begin_ms) / duration));
 }
 
-function wordStyle(word: LyricWord) {
-  return {
-    '--word-progress': `${wordProgress(word) * 100}%`,
-  } as Record<string, string>;
-}
-
 </script>
-
-<style scoped>
-.amdl-lyric-word {
-  position: relative;
-  display: inline-block;
-}
-
-.amdl-lyric-word-highlight {
-  position: absolute;
-  inset: 0;
-  overflow: hidden;
-  white-space: pre;
-  clip-path: inset(0 calc(100% - var(--word-progress)) 0 0);
-  pointer-events: none;
-}
-</style>

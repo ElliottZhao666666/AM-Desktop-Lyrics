@@ -3,7 +3,7 @@ use std::sync::Mutex;
 
 use serde::{Deserialize, Serialize};
 
-use crate::domain::{LyricsDocument, TrackIdentity};
+use crate::domain::{LyricsDocument, LyricsSource, TrackIdentity};
 use crate::lyrics::qq_music::QqSongCandidate;
 
 static CUSTOM_POOL_LOCK: Mutex<()> = Mutex::new(());
@@ -23,11 +23,19 @@ pub fn get(track: &TrackIdentity) -> Result<Option<LyricsDocument>, String> {
         .lock()
         .map_err(|_| "自定义歌词池文件锁已损坏".to_string())?;
     let pool = load_pool()?;
-    Ok(pool.get(&track_key(track)).map(|record| {
-        let mut document = record.document.clone();
-        document.track = track.clone();
-        document
-    }))
+    // 旧键没有专辑字段，迁移时仍核对记录中的专辑，避免跨版本覆盖。
+    Ok(pool
+        .get(&track_key(track))
+        .or_else(|| {
+            pool.values()
+                .find(|record| same_track(&record.track, track))
+        })
+        .map(|record| {
+            let mut document = record.document.clone();
+            document.track = track.clone();
+            document.source = LyricsSource::Manual;
+            document
+        }))
 }
 
 pub fn save(
@@ -39,6 +47,7 @@ pub fn save(
         .lock()
         .map_err(|_| "自定义歌词池文件锁已损坏".to_string())?;
     document.track = track.clone();
+    document.source = LyricsSource::Manual;
     let mut pool = load_pool()?;
     pool.insert(
         track_key(track),
@@ -56,7 +65,7 @@ pub fn save(
         .map_err(|error| format!("创建自定义歌词池目录失败: {error}"))?;
     let text = serde_json::to_string_pretty(&pool)
         .map_err(|error| format!("序列化自定义歌词池失败: {error}"))?;
-    std::fs::write(path, text).map_err(|error| format!("写入自定义歌词池失败: {error}"))
+    crate::settings_store::atomic_write(&path, text.as_bytes())
 }
 
 fn load_pool() -> Result<CustomLyricsPool, String> {
@@ -70,13 +79,25 @@ fn load_pool() -> Result<CustomLyricsPool, String> {
 }
 
 fn track_key(track: &TrackIdentity) -> String {
-    let normalized = format!("{}\0{}", normalize(&track.title), normalize(&track.artist));
+    let normalized = format!(
+        "{}\0{}\0{}",
+        normalize(&track.title),
+        normalize(&track.artist),
+        normalize(track.album.as_deref().unwrap_or(""))
+    );
     let hash = normalized
         .bytes()
         .fold(0xcbf29ce484222325_u64, |hash, byte| {
             (hash ^ u64::from(byte)).wrapping_mul(0x100000001b3)
         });
     format!("{hash:016x}")
+}
+
+fn same_track(first: &TrackIdentity, second: &TrackIdentity) -> bool {
+    normalize(&first.title) == normalize(&second.title)
+        && normalize(&first.artist) == normalize(&second.artist)
+        && normalize(first.album.as_deref().unwrap_or(""))
+            == normalize(second.album.as_deref().unwrap_or(""))
 }
 
 fn normalize(value: &str) -> String {
@@ -104,6 +125,11 @@ mod tests {
             artist: "someartist".into(),
             album: Some("Album B".into()),
         };
-        assert_eq!(track_key(&first), track_key(&second));
+        assert_ne!(track_key(&first), track_key(&second));
+        let same_album = TrackIdentity {
+            album: first.album.clone(),
+            ..second
+        };
+        assert_eq!(track_key(&first), track_key(&same_album));
     }
 }

@@ -6,7 +6,6 @@ use crate::lyrics::{am_api, cache_scanner, matching};
 use ferrous_opencc::{config::BuiltinConfig, OpenCC};
 use std::collections::BTreeMap;
 use std::time::{Duration, SystemTime};
-const DEFAULT_AUTO_CONVERT_TRADITIONAL_TO_SIMPLIFIED: bool = true;
 
 pub struct VerifiedCache {
     pub track_id: String,
@@ -64,7 +63,7 @@ pub async fn fetch_lyrics(
                     );
                     return Ok(Some(VerifiedCache {
                         track_id: candidate.track_id,
-                        document: convert_to_simplified(document),
+                        document,
                     }));
                 }
             }
@@ -120,8 +119,8 @@ fn select_candidate(
         .max_by_key(|(score, modified, _)| (*score, *modified))
         .map(|(_, _, candidate)| candidate.clone())
 }
-fn convert_to_simplified(mut document: LyricsDocument) -> LyricsDocument {
-    if !auto_convert_traditional_to_simplified() {
+pub fn convert_to_simplified(mut document: LyricsDocument, enabled: bool) -> LyricsDocument {
+    if !enabled {
         return document;
     }
     let converter = match OpenCC::from_config(BuiltinConfig::T2s) {
@@ -148,28 +147,6 @@ fn convert_to_simplified(mut document: LyricsDocument) -> LyricsDocument {
         println!("[Cache] 歌词无需繁转简");
     }
     document
-}
-
-fn auto_convert_traditional_to_simplified() -> bool {
-    let Ok(path) = crate::app_paths::settings_file() else {
-        return DEFAULT_AUTO_CONVERT_TRADITIONAL_TO_SIMPLIFIED;
-    };
-    let Ok(encoded) = std::fs::read_to_string(path) else {
-        return DEFAULT_AUTO_CONVERT_TRADITIONAL_TO_SIMPLIFIED;
-    };
-    let Ok(bytes) =
-        base64::Engine::decode(&base64::engine::general_purpose::STANDARD, encoded.trim())
-    else {
-        return DEFAULT_AUTO_CONVERT_TRADITIONAL_TO_SIMPLIFIED;
-    };
-    serde_json::from_slice::<serde_json::Value>(&bytes)
-        .ok()
-        .and_then(|value| {
-            value
-                .get("autoConvertTraditionalToSimplified")
-                .and_then(serde_json::Value::as_bool)
-        })
-        .unwrap_or(DEFAULT_AUTO_CONVERT_TRADITIONAL_TO_SIMPLIFIED)
 }
 
 #[cfg(test)]
@@ -251,7 +228,11 @@ mod tests {
             }],
         };
 
-        let converted = convert_to_simplified(document);
+        assert_eq!(
+            convert_to_simplified(document.clone(), false).lines[0].text,
+            document.lines[0].text
+        );
+        let converted = convert_to_simplified(document, true);
         assert_eq!(converted.lines[0].text, "这条歌陪我一直到大汉");
         assert_eq!(converted.lines[0].words[0].text, "这条歌");
     }

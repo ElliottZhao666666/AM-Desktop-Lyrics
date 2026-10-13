@@ -20,6 +20,7 @@ pub mod lyrics;
 pub mod media;
 pub mod playback;
 pub mod settings_store;
+mod window_geometry;
 
 use base64::Engine;
 use serde::{Deserialize, Serialize};
@@ -45,13 +46,7 @@ struct WindowLockState {
 const DEFAULT_THEME_NAME: &str = "AMDL 默认";
 const DEFAULT_WINDOW_WIDTH: u32 = 800;
 const DEFAULT_WINDOW_HEIGHT: u32 = 150;
-const DEFAULT_WINDOW_BOTTOM_MARGIN: i32 = 80;
-const DEFAULT_THEME_CSS: &str = r#"
-.amdl-lyrics { font-family: "Microsoft YaHei UI", "Segoe UI", sans-serif; font-size: 32px; font-weight: 800; font-style: normal; text-align: center; opacity: 1; }
-.amdl-lyric-line { color: #d7d7de; }
-.amdl-lyric-line.is-active { color: transparent; background: linear-gradient(90deg, #fb7185, #d946ef, #8b5cf6); background-clip: text; -webkit-background-clip: text; -webkit-text-fill-color: transparent; }
-.amdl-progress-fill { background: linear-gradient(90deg, #fb7185, #d946ef); }
-"#;
+const DEFAULT_THEME_CSS: &str = include_str!("../../src/default-theme.css");
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -80,6 +75,8 @@ pub struct AppSettings {
     pub theme_name: String,
     #[serde(default = "default_theme_css")]
     pub theme_css: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub theme_editor: Option<serde_json::Value>,
     #[serde(default)]
     pub lyrics_time_offset_ms: i64,
     #[serde(default)]
@@ -108,6 +105,7 @@ impl Default for AppSettings {
             local_cache_limit: 10,
             theme_name: default_theme_name(),
             theme_css: default_theme_css(),
+            theme_editor: None,
             lyrics_time_offset_ms: 0,
             remember_lyrics_window_bounds: false,
             lyrics_window_bounds: None,
@@ -134,7 +132,19 @@ fn normalize_settings(mut settings: AppSettings) -> AppSettings {
 fn write_settings_unlocked(settings: &AppSettings) -> Result<(), String> {
     let value =
         serde_json::to_value(settings).map_err(|error| format!("设置序列化失败: {error}"))?;
-    settings_store::update(|root| root.extend(value.as_object().unwrap().clone()))
+    settings_store::update(|root| {
+        root.remove("themeEditor");
+        root.extend(value.as_object().unwrap().clone());
+        if let Some(config) = root
+            .get_mut("config")
+            .and_then(serde_json::Value::as_object_mut)
+        {
+            config.insert(
+                "autoChs".into(),
+                settings.auto_convert_traditional_to_simplified.into(),
+            );
+        }
+    })
 }
 
 fn initialize_runtime_lyrics_offset() {
@@ -162,13 +172,12 @@ fn save_settings(app: AppHandle, settings: AppSettings) -> Result<(), String> {
     let runtime_offset_guard = LYRICS_OFFSET_UPDATE_LOCK
         .lock()
         .map_err(|_| "歌词偏移状态锁已损坏".to_string())?;
-    let settings = {
+    let (settings, conversion_changed) = {
         let _guard = SETTINGS_IO_LOCK
             .lock()
             .map_err(|_| "设置文件锁已损坏".to_string())?;
-        let latest_bounds = read_settings_unlocked()
-            .unwrap_or_default()
-            .lyrics_window_bounds;
+        let previous = read_settings_unlocked()?;
+        let latest_bounds = previous.lyrics_window_bounds;
         let mut settings = normalize_settings(settings);
         settings.lyrics_time_offset_ms = LYRICS_TIME_OFFSET_MS.load(Ordering::SeqCst);
         settings.lyrics_window_bounds = if settings.remember_lyrics_window_bounds {
@@ -179,9 +188,15 @@ fn save_settings(app: AppHandle, settings: AppSettings) -> Result<(), String> {
             latest_bounds
         };
         write_settings_unlocked(&settings)?;
-        settings
+        let conversion_changed = previous.auto_convert_traditional_to_simplified
+            != settings.auto_convert_traditional_to_simplified;
+        (settings, conversion_changed)
     };
     drop(runtime_offset_guard);
+    lyrics::provider::apply_cache_settings(settings.local_cache_limit as usize, conversion_changed);
+    if conversion_changed {
+        lyrics::provider::refresh_current_lyrics(app.clone());
+    }
     app.emit("settings-changed", &settings)
         .map_err(|error| format!("广播设置失败: {error}"))?;
     Ok(())
@@ -200,8 +215,16 @@ fn save_config(app: AppHandle, config: config::AppConfig) -> Result<(), String> 
     let _guard = SETTINGS_IO_LOCK
         .lock()
         .map_err(|_| "设置文件锁已损坏".to_string())?;
-    config::write_config(&config.normalize())?;
+    let previous = config::read_config()?;
+    let config = config.normalize();
+    config::write_config(&config)?;
     drop(_guard);
+    lyrics::provider::apply_cache_settings(
+        get_settings()?.local_cache_limit as usize,
+        previous.auto_chs != config.auto_chs,
+    );
+    app.emit("settings-changed", get_settings()?)
+        .map_err(|error| error.to_string())?;
     lyrics::provider::refresh_current_lyrics(app);
     Ok(())
 }
@@ -219,11 +242,19 @@ fn get_runtime_lyrics_time_offset() -> RuntimeLyricsTimeOffset {
 fn update_runtime_lyrics_time_offset(
     app: &AppHandle,
     offset_ms: i64,
+    expected_revision: Option<u64>,
 ) -> Result<RuntimeLyricsTimeOffset, String> {
     initialize_runtime_lyrics_offset();
     let _guard = LYRICS_OFFSET_UPDATE_LOCK
         .lock()
         .map_err(|_| "歌词偏移状态锁已损坏".to_string())?;
+    let current_revision = LYRICS_TIME_OFFSET_REVISION.load(Ordering::SeqCst);
+    if expected_revision.is_some_and(|revision| revision != current_revision) {
+        return Ok(RuntimeLyricsTimeOffset {
+            offset_ms: LYRICS_TIME_OFFSET_MS.load(Ordering::SeqCst),
+            revision: current_revision,
+        });
+    }
     LYRICS_TIME_OFFSET_MS.store(offset_ms, Ordering::SeqCst);
     let payload = RuntimeLyricsTimeOffset {
         offset_ms,
@@ -238,8 +269,9 @@ fn update_runtime_lyrics_time_offset(
 fn set_runtime_lyrics_time_offset(
     app: AppHandle,
     offset_ms: i64,
+    expected_revision: Option<u64>,
 ) -> Result<RuntimeLyricsTimeOffset, String> {
-    update_runtime_lyrics_time_offset(&app, offset_ms)
+    update_runtime_lyrics_time_offset(&app, offset_ms, expected_revision)
 }
 
 #[tauri::command]
@@ -268,6 +300,8 @@ fn adjust_runtime_lyrics_time_offset(
 struct ThemeFile {
     name: String,
     css: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    editor: Option<serde_json::Value>,
 }
 
 fn validate_theme(theme: ThemeFile) -> Result<ThemeFile, String> {
@@ -277,11 +311,25 @@ fn validate_theme(theme: ThemeFile) -> Result<ThemeFile, String> {
     if theme.css.trim().is_empty() || theme.css.len() > 128 * 1024 {
         return Err("主题 CSS 为空或超过 128 KiB".to_string());
     }
+    if theme
+        .editor
+        .as_ref()
+        .is_some_and(|editor| editor.to_string().len() > 32 * 1024)
+    {
+        return Err("主题编辑参数超过 32 KiB".into());
+    }
     Ok(theme)
 }
 
 #[tauri::command]
 fn import_theme_file(path: String) -> Result<ThemeFile, String> {
+    if std::fs::metadata(&path)
+        .map_err(|error| error.to_string())?
+        .len()
+        > 256 * 1024
+    {
+        return Err("主题文件超过 256 KiB".into());
+    }
     let encoded =
         std::fs::read_to_string(path).map_err(|error| format!("读取主题失败: {error}"))?;
     let bytes = base64::engine::general_purpose::STANDARD
@@ -293,8 +341,13 @@ fn import_theme_file(path: String) -> Result<ThemeFile, String> {
 }
 
 #[tauri::command]
-fn export_theme_file(path: String, name: String, css: String) -> Result<(), String> {
-    let theme = validate_theme(ThemeFile { name, css })?;
+fn export_theme_file(
+    path: String,
+    name: String,
+    css: String,
+    editor: Option<serde_json::Value>,
+) -> Result<(), String> {
+    let theme = validate_theme(ThemeFile { name, css, editor })?;
     let bytes = serde_json::to_vec(&theme).map_err(|error| format!("主题序列化失败: {error}"))?;
     let encoded = base64::engine::general_purpose::STANDARD.encode(bytes);
     std::fs::write(path, encoded).map_err(|error| format!("写入主题失败: {error}"))
@@ -305,6 +358,7 @@ fn keep_settings_window_reusable(window: &tauri::WebviewWindow) {
     window.on_window_event(move |event| {
         if let tauri::WindowEvent::CloseRequested { api, .. } = event {
             api.prevent_close();
+            let _ = reusable_window.emit("settings-closed", ());
             let _ = reusable_window.hide();
         }
     });
@@ -314,23 +368,29 @@ fn keep_settings_window_reusable(window: &tauri::WebviewWindow) {
 #[tauri::command]
 fn get_system_fonts() -> Result<Vec<String>, String> {
     use std::collections::BTreeSet;
-    use winreg::enums::HKEY_LOCAL_MACHINE;
+    use winreg::enums::{HKEY_CURRENT_USER, HKEY_LOCAL_MACHINE};
     use winreg::RegKey;
-
-    let key = RegKey::predef(HKEY_LOCAL_MACHINE)
-        .open_subkey("SOFTWARE\\Microsoft\\Windows NT\\CurrentVersion\\Fonts")
-        .map_err(|error| format!("读取系统字体注册表失败: {error}"))?;
     let mut fonts = BTreeSet::new();
-    for item in key.enum_values() {
-        let (name, _) = item.map_err(|error| format!("读取系统字体项失败: {error}"))?;
-        let cleaned = name
-            .trim()
-            .trim_end_matches("(TrueType)")
-            .trim_end_matches("(OpenType)")
-            .trim()
-            .to_string();
-        if !cleaned.is_empty() {
-            fonts.insert(cleaned);
+    for root in [HKEY_LOCAL_MACHINE, HKEY_CURRENT_USER] {
+        let Ok(key) = RegKey::predef(root)
+            .open_subkey("SOFTWARE\\Microsoft\\Windows NT\\CurrentVersion\\Fonts")
+        else {
+            continue;
+        };
+        for item in key.enum_values() {
+            let Ok((name, _)) = item else { continue };
+            let cleaned = name
+                .trim()
+                .trim_end_matches("(TrueType)")
+                .trim_end_matches("(OpenType)")
+                .trim();
+            fonts.extend(
+                cleaned
+                    .split(" & ")
+                    .map(str::trim)
+                    .filter(|name| !name.is_empty())
+                    .map(str::to_owned),
+            );
         }
     }
     Ok(fonts.into_iter().collect())
@@ -345,6 +405,9 @@ fn get_system_fonts() -> Result<Vec<String>, String> {
 #[tauri::command]
 fn open_settings(app: AppHandle) -> Result<(), String> {
     if let Some(window) = app.get_webview_window("settings") {
+        if !window.is_visible().unwrap_or(false) {
+            let _ = window.emit("settings-opened", ());
+        }
         window.show().map_err(|error| error.to_string())?;
         window.set_focus().map_err(|error| error.to_string())?;
         return Ok(());
@@ -453,74 +516,44 @@ fn show_main_window(app: &AppHandle) {
     }
 }
 
+fn monitor_screen(monitor: &tauri::Monitor) -> window_geometry::Screen {
+    let area = monitor.work_area();
+    window_geometry::Screen {
+        bounds: LyricsWindowBounds {
+            x: area.position.x,
+            y: area.position.y,
+            width: area.size.width,
+            height: area.size.height,
+        },
+        scale: monitor.scale_factor(),
+    }
+}
 fn default_window_bounds(window: &tauri::WebviewWindow) -> LyricsWindowBounds {
-    let monitor = window
+    window
         .primary_monitor()
         .ok()
         .flatten()
-        .or_else(|| window.available_monitors().ok()?.into_iter().next());
-    let Some(monitor) = monitor else {
-        return LyricsWindowBounds {
+        .or_else(|| window.available_monitors().ok()?.into_iter().next())
+        .map(|monitor| window_geometry::default_bounds(monitor_screen(&monitor)))
+        .unwrap_or(LyricsWindowBounds {
             x: 0,
             y: 0,
             width: DEFAULT_WINDOW_WIDTH,
             height: DEFAULT_WINDOW_HEIGHT,
-        };
-    };
-    let work_area = monitor.work_area();
-    let x = work_area.position.x + (work_area.size.width as i32 - DEFAULT_WINDOW_WIDTH as i32) / 2;
-    let y = (work_area.position.y + work_area.size.height as i32
-        - DEFAULT_WINDOW_HEIGHT as i32
-        - DEFAULT_WINDOW_BOTTOM_MARGIN)
-        .max(work_area.position.y);
-    LyricsWindowBounds {
-        x,
-        y,
-        width: DEFAULT_WINDOW_WIDTH,
-        height: DEFAULT_WINDOW_HEIGHT,
-    }
+        })
 }
-
 fn normalize_window_bounds(
     window: &tauri::WebviewWindow,
     bounds: LyricsWindowBounds,
 ) -> LyricsWindowBounds {
-    let Ok(monitors) = window.available_monitors() else {
-        return default_window_bounds(window);
-    };
-    if monitors.is_empty() {
-        return default_window_bounds(window);
-    }
-    let left = monitors
+    let screens = window
+        .available_monitors()
+        .unwrap_or_default()
         .iter()
-        .map(|monitor| monitor.position().x)
-        .min()
-        .unwrap();
-    let top = monitors
-        .iter()
-        .map(|monitor| monitor.position().y)
-        .min()
-        .unwrap();
-    let right = monitors
-        .iter()
-        .map(|monitor| monitor.position().x + monitor.size().width as i32)
-        .max()
-        .unwrap();
-    let bottom = monitors
-        .iter()
-        .map(|monitor| monitor.position().y + monitor.size().height as i32)
-        .max()
-        .unwrap();
-    let width = bounds.width.clamp(420, (right - left).max(420) as u32);
-    let height = bounds.height.clamp(100, (bottom - top).max(100) as u32);
-    LyricsWindowBounds {
-        x: bounds.x.clamp(left, (right - width as i32).max(left)),
-        y: bounds.y.clamp(top, (bottom - height as i32).max(top)),
-        width,
-        height,
-    }
+        .map(monitor_screen)
+        .collect::<Vec<_>>();
+    window_geometry::restore(bounds, &screens).unwrap_or_else(|| default_window_bounds(window))
 }
-
 fn apply_window_bounds(window: &tauri::WebviewWindow, bounds: LyricsWindowBounds) {
     let _ = window.set_size(tauri::Size::Physical(tauri::PhysicalSize::new(
         bounds.width,
@@ -542,38 +575,51 @@ fn current_window_bounds(window: &tauri::WebviewWindow) -> Option<LyricsWindowBo
     })
 }
 
-fn schedule_window_bounds_save(
-    bounds: LyricsWindowBounds,
+fn start_window_bounds_writer(
     generation: Arc<AtomicU64>,
     suspended: Arc<AtomicBool>,
+) -> std::sync::mpsc::Sender<(LyricsWindowBounds, u64)> {
+    let (sender, receiver) = std::sync::mpsc::channel::<(LyricsWindowBounds, u64)>();
+    std::thread::spawn(move || {
+        while let Ok(mut pending) = receiver.recv() {
+            loop {
+                match receiver.recv_timeout(Duration::from_millis(300)) {
+                    Ok(latest) => pending = latest,
+                    Err(std::sync::mpsc::RecvTimeoutError::Timeout) => break,
+                    Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => return,
+                }
+            }
+            if suspended.load(Ordering::SeqCst) || generation.load(Ordering::SeqCst) != pending.1 {
+                continue;
+            }
+            let Ok(_guard) = SETTINGS_IO_LOCK.lock() else {
+                continue;
+            };
+            if suspended.load(Ordering::SeqCst) || generation.load(Ordering::SeqCst) != pending.1 {
+                continue;
+            }
+            let Ok(mut settings) = read_settings_unlocked() else {
+                continue;
+            };
+            if !settings.remember_lyrics_window_bounds {
+                continue;
+            }
+            settings.lyrics_window_bounds = Some(pending.0);
+            if let Err(error) = write_settings_unlocked(&settings) {
+                eprintln!("[窗口] 保存位置失败: {error}");
+            }
+        }
+    });
+    sender
+}
+fn schedule_window_bounds_save(
+    bounds: LyricsWindowBounds,
+    generation: &AtomicU64,
+    sender: &std::sync::mpsc::Sender<(LyricsWindowBounds, u64)>,
 ) {
     let current_generation = generation.fetch_add(1, Ordering::SeqCst) + 1;
-    std::thread::spawn(move || {
-        std::thread::sleep(Duration::from_millis(300));
-        if suspended.load(Ordering::SeqCst)
-            || generation.load(Ordering::SeqCst) != current_generation
-        {
-            return;
-        }
-        let Ok(_guard) = SETTINGS_IO_LOCK.lock() else {
-            return;
-        };
-        if suspended.load(Ordering::SeqCst)
-            || generation.load(Ordering::SeqCst) != current_generation
-        {
-            return;
-        }
-        let Ok(mut settings) = read_settings_unlocked() else {
-            return;
-        };
-        if !settings.remember_lyrics_window_bounds {
-            return;
-        }
-        settings.lyrics_window_bounds = Some(bounds);
-        let _ = write_settings_unlocked(&settings);
-    });
+    let _ = sender.send((bounds, current_generation));
 }
-
 fn resume_window_bounds_saving(suspended: Arc<AtomicBool>) {
     std::thread::spawn(move || {
         std::thread::sleep(Duration::from_millis(500));
@@ -586,6 +632,9 @@ pub fn run() {
     // WebView 会在 setup 完成前开始加载，首次 IPC 也必须看到持久化偏移。
     initialize_runtime_lyrics_offset();
     tauri::Builder::default()
+        .plugin(tauri_plugin_single_instance::init(|app, _, _| {
+            show_main_window(app)
+        }))
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_process::init())
@@ -600,6 +649,10 @@ pub fn run() {
             let initial_settings = get_settings().unwrap_or_default();
             let bounds_save_suspended = Arc::new(AtomicBool::new(true));
             let bounds_save_generation = Arc::new(AtomicU64::new(0));
+            let bounds_sender = start_window_bounds_writer(
+                bounds_save_generation.clone(),
+                bounds_save_suspended.clone(),
+            );
 
             let lock_item =
                 CheckMenuItem::with_id(app, "lock", "锁定窗口", true, false, None::<&str>)?;
@@ -714,34 +767,20 @@ pub fn run() {
                     let Ok(size) = bounded_window.outer_size() else {
                         return;
                     };
-                    let left = monitors
-                        .iter()
-                        .map(|monitor| monitor.position().x)
-                        .min()
-                        .unwrap();
-                    let top = monitors
-                        .iter()
-                        .map(|monitor| monitor.position().y)
-                        .min()
-                        .unwrap();
-                    let right = monitors
-                        .iter()
-                        .map(|monitor| monitor.position().x + monitor.size().width as i32)
-                        .max()
-                        .unwrap();
-                    let bottom = monitors
-                        .iter()
-                        .map(|monitor| monitor.position().y + monitor.size().height as i32)
-                        .max()
-                        .unwrap();
-                    let max_x = (right - size.width as i32).max(left);
-                    let max_y = (bottom - size.height as i32).max(top);
-                    let x = position.x.clamp(left, max_x);
-                    let y = position.y.clamp(top, max_y);
+                    let screens = monitors.iter().map(monitor_screen).collect::<Vec<_>>();
+                    let recovered = window_geometry::recover_if_hidden(
+                        LyricsWindowBounds {
+                            x: position.x,
+                            y: position.y,
+                            width: size.width,
+                            height: size.height,
+                        },
+                        &screens,
+                    );
+                    let x = recovered.x;
+                    let y = recovered.y;
                     if x != position.x || y != position.y {
-                        let _ = bounded_window.set_position(tauri::Position::Physical(
-                            tauri::PhysicalPosition::new(x, y),
-                        ));
+                        apply_window_bounds(&bounded_window, recovered);
                         return;
                     }
                     let _ = position_unlock_window(bounded_window.app_handle());
@@ -753,8 +792,8 @@ pub fn run() {
                                 width: size.width,
                                 height: size.height,
                             },
-                            event_save_generation.clone(),
-                            event_save_suspended.clone(),
+                            &event_save_generation,
+                            &bounds_sender,
                         );
                     }
                 });

@@ -540,69 +540,44 @@ fn smtc_main_loop(app: Arc<tauri::AppHandle>) {
 pub fn get_media_snapshot() -> Result<MediaSnapshotPayload, String> {
     crate::playback::snapshot()
 }
-/// 切换播放/暂停状态
-#[command]
-pub fn play_pause() -> Result<(), String> {
+async fn control_playback(action: &'static str) -> Result<(), String> {
     let session = CURRENT_SESSION
         .lock()
-        .map_err(|e| e.to_string())?
+        .map_err(|error| error.to_string())?
         .clone()
-        .ok_or_else(|| "没有活跃的 Apple Music 会话".to_string())?;
-    // TryTogglePlayPauseAsync() 异步切换播放/暂停，.get() 同步等待结果
-    let accepted = session
-        .TryTogglePlayPauseAsync()
-        .map_err(|e| e.to_string())?
-        .get()
-        .map_err(|e| e.to_string())?;
-    if !accepted {
-        return Err("Apple Music 拒绝了播放/暂停操作".to_string());
-    }
-    println!("[SMTC] 执行: 切换播放/暂停");
-    Ok(())
+        .ok_or("没有活跃的 Apple Music 会话")?;
+    let work = tauri::async_runtime::spawn_blocking(move || {
+        let _apartment = WinRtApartment::initialize().map_err(|error| error.to_string())?;
+        let operation = match action {
+            "播放/暂停" => session.TryTogglePlayPauseAsync(),
+            "下一曲" => session.TrySkipNextAsync(),
+            _ => session.TrySkipPreviousAsync(),
+        }
+        .map_err(|error| error.to_string())?;
+        let accepted = operation.get().map_err(|error| error.to_string())?;
+        if !accepted {
+            return Err(format!("Apple Music 拒绝了{action}操作"));
+        }
+        println!("[SMTC] 执行: {action}");
+        Ok(())
+    });
+    tokio::time::timeout(Duration::from_secs(5), work)
+        .await
+        .map_err(|_| format!("Apple Music {action}响应超时"))?
+        .map_err(|error| error.to_string())?
 }
-
-/// 切换到下一曲
 #[command]
-pub fn next_track() -> Result<(), String> {
-    let session = CURRENT_SESSION
-        .lock()
-        .map_err(|e| e.to_string())?
-        .clone()
-        .ok_or_else(|| "没有活跃的 Apple Music 会话".to_string())?;
-    // TrySkipNextAsync() 异步切换到下一曲
-    let accepted = session
-        .TrySkipNextAsync()
-        .map_err(|e| e.to_string())?
-        .get()
-        .map_err(|e| e.to_string())?;
-    if !accepted {
-        return Err("Apple Music 拒绝了下一曲操作".to_string());
-    }
-    println!("[SMTC] 执行: 下一曲");
-    Ok(())
+pub async fn play_pause() -> Result<(), String> {
+    control_playback("播放/暂停").await
 }
-
-/// 切换到上一曲
 #[command]
-pub fn prev_track() -> Result<(), String> {
-    let session = CURRENT_SESSION
-        .lock()
-        .map_err(|e| e.to_string())?
-        .clone()
-        .ok_or_else(|| "没有活跃的 Apple Music 会话".to_string())?;
-    // TrySkipPreviousAsync() 异步切换到上一曲
-    let accepted = session
-        .TrySkipPreviousAsync()
-        .map_err(|e| e.to_string())?
-        .get()
-        .map_err(|e| e.to_string())?;
-    if !accepted {
-        return Err("Apple Music 拒绝了上一曲操作".to_string());
-    }
-    println!("[SMTC] 执行: 上一曲");
-    Ok(())
+pub async fn next_track() -> Result<(), String> {
+    control_playback("下一曲").await
 }
-
+#[command]
+pub async fn prev_track() -> Result<(), String> {
+    control_playback("上一曲").await
+}
 #[cfg(test)]
 mod tests {
     use super::{clean_artist, is_unavailable_track, parse_apple_music_metadata};
@@ -664,6 +639,22 @@ mod tests {
         .unwrap()
         .expect("已核验缓存应能正确读取");
         assert_eq!(candidate.document.track, cached_song.track);
+        assert!(candidate
+            .document
+            .lines
+            .iter()
+            .all(|line| line.end_ms.is_some_and(|end| end > line.begin_ms)));
+        for line in &candidate.document.lines {
+            if !line.words.is_empty() {
+                assert_eq!(
+                    line.words
+                        .iter()
+                        .map(|word| word.text.as_str())
+                        .collect::<String>(),
+                    line.text
+                );
+            }
+        }
         println!(
             "[实机核对] 已核验 lyricsId={}, lines={}",
             candidate.track_id,

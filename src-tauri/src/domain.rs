@@ -15,6 +15,7 @@ pub enum LyricsSource {
     AppleMusicApi,
     AppleMusicCache,
     QqMusic,
+    Manual,
     AmllDb,
     Dummy,
 }
