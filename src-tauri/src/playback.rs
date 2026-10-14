@@ -155,6 +155,7 @@ mod tests {
         let mut state = PlaybackStore::new();
         let first = state.update_media(media("A"));
         let doc = LyricsDocument {
+            storage: Default::default(),
             track: first.track.clone(),
             source: LyricsSource::QqMusic,
             lines: Vec::new(),

@@ -51,12 +51,13 @@ pub async fn fetch_lyrics(
             if let Some(candidate) =
                 select_candidate(&candidates, &metadata, track, duration_ms, requested_at)
             {
-                let document = parse_ttml(
+                let mut document = parse_ttml(
                     track.clone(),
                     LyricsSource::AppleMusicCache,
                     &candidate.ttml,
                 )
                 .map_err(|error| error.to_string())?;
+                document.storage.apple_music_id = Some(candidate.track_id.clone());
                 if !document.lines.is_empty() {
                     println!(
                         "[Cache] 身份核验通过: id={}, track={track:?}, duration={}",
@@ -218,6 +219,7 @@ mod tests {
     #[test]
     fn converts_cached_lyrics_to_simplified_chinese() {
         let document = LyricsDocument {
+            storage: Default::default(),
             track: TrackIdentity::default(),
             source: LyricsSource::AppleMusicCache,
             duration_ms: None,

@@ -47,7 +47,7 @@ pub fn parse_lrc(value: &str, duration_ms: Option<u64>) -> Vec<LyricLine> {
     lines.retain(|line| !line.text.is_empty());
     lines
 }
-fn timestamp(value: &str) -> Option<u64> {
+pub(crate) fn timestamp(value: &str) -> Option<u64> {
     let (minutes, seconds) = value.split_once(':')?;
     if minutes.is_empty() || minutes.len() > 3 || !minutes.bytes().all(|byte| byte.is_ascii_digit())
     {

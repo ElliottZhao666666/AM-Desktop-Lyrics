@@ -85,8 +85,7 @@
             <small>{{ currentTrack.album || '暂无专辑信息' }}</small>
           </div>
           <div class="match-quick-actions">
-            <button class="icon-command" :disabled="!canMatch || matchBusy" @click="rescanLocalLyrics"><Database :size="16" />重新扫描本地缓存</button>
-            <button class="icon-command" :disabled="!canMatch || matchBusy" @click="refetchQqLyrics"><CloudDownload :size="16" />重新获取 Q音歌词</button>
+            <LyricsRefreshButton :disabled="!canMatch || matchBusy" :busy="actionBusy" @refresh="refetchLyrics" />
           </div>
         </div>
 
@@ -126,7 +125,7 @@
       </div>
 
       <div v-else-if="activeSection === 'lyricsSources'" class="sources-workspace">
-        <div class="sources-intro"><strong>歌词获取渠道</strong><p>按优先级依次尝试启用的渠道。手动匹配结果和永久匹配始终优先。</p></div>
+        <div class="sources-intro"><strong>歌词获取渠道</strong><p>按优先级依次尝试启用的歌词获取渠道。</p></div>
         <div class="source-list">
           <div v-for="source in sortedLyricsSources" :key="source.id" class="source-card" :class="{ disabled: source.id === 'neteaseMusic' }">
             <div class="source-order">{{ source.priority }}</div>
@@ -142,6 +141,8 @@
           <p>Token 仅保存在本机配置中，点击底部“保存并生效”后才会写入。</p>
         </div>
       </div>
+
+      <LyricsPoolManager v-else-if="activeSection === 'lyricsPool'" />
 
       <div v-else class="about-panel">
         <div class="about-content">
@@ -191,14 +192,16 @@ import { openUrl } from '@tauri-apps/plugin-opener';
 import { relaunch } from '@tauri-apps/plugin-process';
 import { check } from '@tauri-apps/plugin-updater';
 import { Check, CloudDownload, Database, FileText, FolderOpen, Info, Palette, RefreshCw, Save, Search, Settings2, Globe, GitBranch } from '@lucide/vue';
-import type { AppConfig, AppSettings, MediaSnapshotPayload, MediaStatePayload, QqLyricsPreview, QqSongCandidate, RuntimeLyricsTimeOffset, ThemeFile, TrackIdentity } from '../types';
+import type { AppConfig, AppSettings, LyricsRefetchSource, MediaSnapshotPayload, MediaStatePayload, QqLyricsPreview, QqSongCandidate, RuntimeLyricsTimeOffset, ThemeFile, TrackIdentity } from '../types';
 import { buildThemeCss, cloneEditor, mergeThemeCss, restoreThemeEditor, DEFAULT_EDITOR, DEFAULT_THEME_CSS, PRESETS, type ThemeEditor } from '../theme';
 import TextStyleEditor from './TextStyleEditor.vue';
+import LyricsPoolManager from './LyricsPoolManager.vue';
+import LyricsRefreshButton from './LyricsRefreshButton.vue';
 import appIcon from '../../app-icon.png';
 
 const appVersion = __APP_VERSION__;
 
-const sections = [{ id: 'general', label: '通用', icon: Settings2 }, { id: 'appearance', label: '外观', icon: Palette }, { id: 'lyricsMatch', label: '匹配歌词', icon: Search }, { id: 'lyricsSources', label: '歌词渠道', icon: CloudDownload }, { id: 'logs', label: '日志', icon: FileText }, { id: 'about', label: '关于', icon: Info }] as const;
+const sections = [{ id: 'general', label: '通用', icon: Settings2 }, { id: 'appearance', label: '外观', icon: Palette }, { id: 'lyricsMatch', label: '匹配歌词', icon: Search }, { id: 'lyricsSources', label: '歌词渠道', icon: CloudDownload }, { id: 'lyricsPool', label: '歌词池管理', icon: Database }, { id: 'logs', label: '日志', icon: FileText }, { id: 'about', label: '关于', icon: Info }] as const;
 const activeSection = ref<typeof sections[number]['id']>('general');
 const settings = ref<AppSettings>({
   autoConvertTraditionalToSimplified: true,
@@ -245,6 +248,7 @@ let unlistenTopmost: UnlistenFn | null = null;
 let topmostEventVersion = 0;
 let windowLifecycle = Promise.resolve();
 let mediaStateRevision = -1;
+let mediaTrackRevision = -1;
 let lyricsTimeOffsetRevision = -1;
 let latestLyricsTimeOffset: RuntimeLyricsTimeOffset = { offsetMs: 0, revision: -1 };
 let pendingLyricsOffsetUpdate: Promise<void> = Promise.resolve();
@@ -313,15 +317,18 @@ onUnmounted(() => { unlistenLyricsTimeOffset?.(); unlistenMediaState?.(); unlist
 function applyMediaState(payload: MediaStatePayload) {
   if (payload.revision < mediaStateRevision) return;
   mediaStateRevision = payload.revision;
-  updateCurrentTrack(payload.track);
+  const changed = payload.track_revision !== mediaTrackRevision;
+  mediaTrackRevision = payload.track_revision;
+  updateCurrentTrack(payload.track, changed);
 }
 
-function updateCurrentTrack(track: TrackIdentity) {
-  const changed = track.title !== currentTrack.value.title || track.artist !== currentTrack.value.artist || track.album !== currentTrack.value.album;
+function updateCurrentTrack(track: TrackIdentity, changedRevision = false) {
+  const changed = changedRevision || track.title !== currentTrack.value.title || track.artist !== currentTrack.value.artist || track.album !== currentTrack.value.album;
   currentTrack.value = track;
   if (!changed) return;
   searchGeneration++; previewGeneration++; actionGeneration++;
   searchBusy.value = false; previewBusy.value = false; actionBusy.value = false;
+  if (activeSection.value === 'lyricsMatch') message.value = '';
   matchQuery.value = { title: track.title === '等待播放...' ? '' : track.title, artist: track.artist, album: track.album ?? '' };
   matchCandidates.value = [];
   selectedCandidate.value = null;
@@ -338,23 +345,15 @@ function formatDuration(durationMs: number | null) {
   return `${Math.floor(seconds / 60)}:${String(seconds % 60).padStart(2, '0')}`;
 }
 
-async function rescanLocalLyrics() {
+async function refetchLyrics(source: LyricsRefetchSource) {
+  if (!canMatch.value || matchBusy.value) return;
   const generation = ++actionGeneration;
   actionBusy.value = true;
+  message.value = '正在重新获取歌词…';
   try {
-    const found = await invoke<boolean>('rescan_local_lyrics', { track: currentTrack.value });
-    if (generation === actionGeneration) await showMessage(found ? '本地缓存已刷新' : '本地缓存中没有找到当前歌曲歌词', { title: 'AMDL', kind: 'info' });
-  } catch (error) { if (generation === actionGeneration) await showMessage(String(error), { title: '扫描失败', kind: 'error' }); }
-  finally { if (generation === actionGeneration) actionBusy.value = false; }
-}
-
-async function refetchQqLyrics() {
-  const generation = ++actionGeneration;
-  actionBusy.value = true;
-  try {
-    const found = await invoke<boolean>('refetch_qq_lyrics', { track: currentTrack.value });
-    if (generation === actionGeneration) await showMessage(found ? 'Q音歌词已刷新' : 'Q音没有找到匹配歌词', { title: 'AMDL', kind: 'info' });
-  } catch (error) { if (generation === actionGeneration) await showMessage(String(error), { title: '获取失败', kind: 'error' }); }
+    const found = await invoke<boolean>('refetch_lyrics', { track: { ...currentTrack.value }, source });
+    if (generation === actionGeneration) message.value = found ? '歌词已重新获取并显示' : '未找到可信匹配歌词';
+  } catch (error) { if (generation === actionGeneration) message.value = `重新获取失败：${String(error)}`; }
   finally { if (generation === actionGeneration) actionBusy.value = false; }
 }
 

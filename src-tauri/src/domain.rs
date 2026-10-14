@@ -44,6 +44,22 @@ pub struct LyricsDocument {
     pub source: LyricsSource,
     pub lines: Vec<LyricLine>,
     pub duration_ms: Option<u64>,
+    #[serde(default)]
+    pub storage: LyricsStorage,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub enum LyricsTiming {
+    Word,
+    Line,
+}
+
+/// 歌曲 ID 与统一时间轴类型。旧池文件缺少此字段时仍能加载。
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
+pub struct LyricsStorage {
+    pub apple_music_id: Option<String>,
+    pub timing: Option<LyricsTiming>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]

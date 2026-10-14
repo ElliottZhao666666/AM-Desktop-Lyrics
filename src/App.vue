@@ -1,6 +1,7 @@
 <template>
   <SettingsView v-if="isSettingsWindow" />
   <UnlockButton v-else-if="isUnlockWindow" />
+  <LyricsPoolEditor v-else-if="isLyricsEditorWindow" />
   <div v-else
     class="lyrics-window w-screen h-screen relative overflow-hidden"
     :class="{ 'is-interactive': isHovering && !controlsLocked }"
@@ -53,6 +54,7 @@ import ControlBar from './components/ControlBar.vue';
 import LyricsBoard from './components/LyricsBoard.vue';
 import SettingsView from './components/SettingsView.vue';
 import UnlockButton from './components/UnlockButton.vue';
+import LyricsPoolEditor from './components/LyricsPoolEditor.vue';
 import type {
   AppSettings,
   LyricsDocument,
@@ -68,6 +70,7 @@ import { PlaybackClock } from './playback-clock';
 const currentWindowLabel = getCurrentWindow().label;
 const isSettingsWindow = currentWindowLabel === 'settings';
 const isUnlockWindow = currentWindowLabel === 'unlock';
+const isLyricsEditorWindow = currentWindowLabel.startsWith('lyrics-editor');
 
 // ==========================================
 // 响应式状态
@@ -213,7 +216,7 @@ function applyLyricsSnapshot(payload: LyricsSnapshotPayload) {
 // ==========================================
 onMounted(async () => {
   if (currentWindowLabel === 'main') void checkForStartupUpdate();
-  if (isSettingsWindow || isUnlockWindow) return;
+  if (isSettingsWindow || isUnlockWindow || isLyricsEditorWindow) return;
 
   unlistenLockState = await listen<boolean>('lock-state-changed', (event) => {
     controlsLocked.value = event.payload;

@@ -1,26 +1,271 @@
-<!doctype html>
+<!DOCTYPE html>
 <html lang="zh-CN">
 <head>
-  <meta charset="utf-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>Apple Music Token 设置说明 · AMDL</title>
-  <style>body{max-width:760px;margin:40px auto;padding:0 24px;font:16px/1.8 system-ui,sans-serif;color:#24242a;background:#fafafc}a{color:#bd2c76}code{background:#eee;padding:2px 5px;border-radius:4px}h1{font-size:28px}h2{font-size:21px}</style>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Apple Music Token 获取与设置教程 | AMDL 帮助</title>
+    <link rel="canonical" href="https://amdl.ybjun.com/help/get-token/">
+    <meta name="description" content="图文介绍如何获取 Apple Music 的 Authorization 和 Media-User-Token，并在 AMDL 中配置官方逐字歌词，涵盖完整操作步骤、凭证有效期及使用注意事项。">
+    <meta name="author" content="月半菌">
+    <meta name="robots" content="index, follow, max-image-preview:large">
+    <meta property="og:title" content="Apple Music Token 获取与设置教程 | AMDL 帮助">
+    <meta property="og:description" content="图文介绍如何获取 Apple Music 的 Authorization 和 Media-User-Token，并在 AMDL 中配置官方逐字歌词，涵盖完整操作步骤、凭证有效期及使用注意事项。">
+    <meta property="og:type" content="article">
+    <meta property="og:url" content="https://amdl.ybjun.com/help/get-token/">
+    <meta property="og:image" content="https://amdl.ybjun.com/help/get-token/token-settings.png">
+    <meta property="og:image:width" content="2324">
+    <meta property="og:image:height" content="1420">
+    <meta property="og:image:alt" content="AMDL 歌词渠道中的 Apple Music Token 设置入口">
+    <meta property="og:locale" content="zh_CN">
+    <meta property="og:site_name" content="AMDL 官方网站">
+    <meta property="article:author" content="https://www.ybjun.com">
+    <meta property="article:modified_time" content="2026-10-14T15:03:18+08:00">
+    <meta name="twitter:card" content="summary_large_image">
+    <meta name="twitter:title" content="Apple Music Token 获取与设置教程 | AMDL 帮助">
+    <meta name="twitter:description" content="图文介绍如何获取 Apple Music 的 Authorization 和 Media-User-Token，并在 AMDL 中配置官方逐字歌词，涵盖完整操作步骤、凭证有效期及使用注意事项。">
+    <meta name="twitter:image" content="https://amdl.ybjun.com/help/get-token/token-settings.png">
+    <meta name="twitter:image:alt" content="AMDL 歌词渠道中的 Apple Music Token 设置入口">
+    <script type="application/ld+json">
+{
+  "@context": "https://schema.org",
+  "@graph": [
+    {
+      "@type": "WebPage",
+      "@id": "https://amdl.ybjun.com/help/get-token/",
+      "url": "https://amdl.ybjun.com/help/get-token/",
+      "name": "Apple Music Token 获取与设置教程",
+      "description": "图文介绍如何获取 Apple Music 的 Authorization 和 Media-User-Token，并在 AMDL 中配置官方逐字歌词，涵盖完整操作步骤、凭证有效期及使用注意事项。",
+      "inLanguage": "zh-CN",
+      "breadcrumb": {
+        "@id": "https://amdl.ybjun.com/help/get-token/#breadcrumb"
+      },
+      "mainEntity": {
+        "@id": "https://amdl.ybjun.com/help/get-token/#article"
+      }
+    },
+    {
+      "@type": "Article",
+      "@id": "https://amdl.ybjun.com/help/get-token/#article",
+      "headline": "Apple Music Token 获取与设置教程",
+      "description": "图文介绍如何获取 Apple Music 的 Authorization 和 Media-User-Token，并在 AMDL 中配置官方逐字歌词，涵盖完整操作步骤、凭证有效期及使用注意事项。",
+      "inLanguage": "zh-CN",
+      "articleSection": "AMDL 使用帮助",
+      "isAccessibleForFree": true,
+      "dateModified": "2026-10-14T15:03:18+08:00",
+      "mainEntityOfPage": {
+        "@id": "https://amdl.ybjun.com/help/get-token/"
+      },
+      "author": {
+        "@type": "Person",
+        "name": "月半菌",
+        "url": "https://www.ybjun.com"
+      },
+      "image": [
+        "https://amdl.ybjun.com/help/get-token/token-settings.png"
+      ]
+    },
+    {
+      "@type": "BreadcrumbList",
+      "@id": "https://amdl.ybjun.com/help/get-token/#breadcrumb",
+      "itemListElement": [
+        {
+          "@type": "ListItem",
+          "position": 1,
+          "name": "AMDL 官网",
+          "item": "https://amdl.ybjun.com/"
+        },
+        {
+          "@type": "ListItem",
+          "position": 2,
+          "name": "Apple Music Token 获取与设置教程",
+          "item": "https://amdl.ybjun.com/help/get-token/"
+        }
+      ]
+    }
+  ]
+}
+    </script>
+    <!-- amdl:head -->
+<link rel="stylesheet" href="../../assets/site.css">
+<link rel="icon" type="image/png" href="../../assets/app-icon.png">
+<link rel="apple-touch-icon" href="../../assets/app-icon.png">
+<!-- /amdl:head -->
+    <style>
+        html { scroll-behavior: smooth; scroll-padding-top: 100px; }
+        .article-layout { display: grid; grid-template-columns: minmax(0,1fr) 190px; gap: 36px; max-width: 1100px; padding: 104px 5% 80px; margin: 0 auto; align-items: start; }
+        .article-toc { position: sticky; top: 100px; padding: 12px 0; }
+        .toc-title { margin: 0 0 14px; font-size: 13px; font-weight: 600; color: var(--text-muted); }
+        .article-toc a { display: block; padding: 8px 0; color: #55555b; font-size: 14px; text-decoration: none; transition: color 0.2s; }
+        .article-toc a:hover { color: var(--am-pink); }
+        .article-card { min-width: 0; padding: 40px; background: var(--section-bg); border: 1px solid rgba(0,0,0,0.05); border-radius: 16px; }
+        .article-header { margin-bottom: 30px; padding-bottom: 26px; border-bottom: 1px solid #ededf0; }
+        .breadcrumb { margin-bottom: 18px; }
+        .breadcrumb ol { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; list-style: none; padding: 0; margin: 0; }
+        .breadcrumb li { font-size: 13px; color: #707077; }
+        .breadcrumb li + li::before { content: '/'; margin-right: 8px; color: #b0b0b7; }
+        .breadcrumb a { color: #707077; text-decoration: none; }
+        .article-header h1 { margin: 0; font-size: 32px; font-weight: 750; line-height: 1.45; letter-spacing: -0.025em; overflow-wrap: anywhere; }
+        .mobile-toc { display: none; }
+        .article-card h2 { margin: 0 0 20px; font-size: 25px; line-height: 1.4; letter-spacing: -0.02em; }
+        .article-section + .article-section { margin-top: 40px; padding-top: 32px; border-top: 1px solid #ededf0; }
+        .article-card h3 { margin: 32px 0 14px; font-size: 20px; line-height: 1.5; letter-spacing: -0.01em; }
+        .article-card p { margin: 0 0 18px; }
+        .article-card p, .article-card li { font-size: 16px; line-height: 1.9; overflow-wrap: anywhere; }
+        .article-card a { color: var(--am-pink-dark); text-underline-offset: 4px; }
+        .article-card strong { font-weight: 650; }
+        .article-card code { padding: 3px 6px; border-radius: 5px; font-family: "SFMono-Regular", Consolas, "Liberation Mono", monospace; font-size: 0.88em; background: #f4f4f7; color: #8e315c; overflow-wrap: anywhere; }
+        .article-figure { display: block; margin: 24px 0 28px; }
+        .article-figure a { display: block; }
+        .article-figure img { display: block; width: 100%; height: auto; box-sizing: border-box; border: 1px solid rgba(0,0,0,0.07); border-radius: 12px; box-shadow: 0 8px 24px rgba(0,0,0,0.06); }
+        .article-figure figcaption { margin-top: 12px; color: var(--text-muted); font-size: 13px; line-height: 1.7; text-align: center; }
+        .steps { margin: 0; padding: 0; list-style: none; counter-reset: step; }
+        .steps > li { position: relative; padding-top: 30px; margin-top: 30px; border-top: 1px solid #ededf0; counter-increment: step; }
+        .steps > li:first-child { margin-top: 0; padding-top: 0; border-top: 0; }
+        .steps > li > h3 { display: flex; align-items: baseline; gap: 12px; margin-top: 0; }
+        .steps > li > h3::before { content: counter(step, decimal-leading-zero); color: var(--am-pink); font-size: 14px; font-weight: 700; flex-shrink: 0; }
+        .article-card ul { margin: 16px 0 24px; padding-left: 24px; }
+        .article-card ul li { margin-bottom: 12px; padding-left: 3px; }
+        .article-card ul ul { margin-top: 10px; margin-bottom: 0; }
+        .back-top { display: inline-block; margin-top: 24px; font-size: 14px; }
+        .article-meta { margin-top: 36px; padding-top: 20px; border-top: 1px solid #ededf0; color: #707077; }
+        .article-meta p { margin: 0; font-size: 13px; }
+        @media (max-width: 860px) {
+            .article-layout { grid-template-columns: minmax(0,1fr); padding-top: 92px; }
+            .article-toc { display: none; }
+            .article-card { padding: 28px; }
+            .article-header h1 { font-size: 29px; }
+            .mobile-toc { display: block; margin: 0 0 28px; padding: 14px 18px; border-radius: 8px; background: #f5f5f8; }
+            .mobile-toc summary { cursor: pointer; font-size: 14px; font-weight: 600; }
+            .mobile-toc nav { display: grid; gap: 8px; padding-top: 14px; }
+            .mobile-toc a { font-size: 14px; text-decoration: none; }
+        }
+        @media (max-width: 480px) {
+            .article-layout { padding: 80px 4% 48px; }
+            .article-card { padding: 24px 20px; border-radius: 12px; }
+            .article-header h1 { font-size: 26px; }
+            .article-card h2 { font-size: 22px; }
+            .article-card h3 { font-size: 19px; }
+            .article-card p, .article-card li { font-size: 15px; }
+        }
+        @media (prefers-reduced-motion: reduce) { html { scroll-behavior: auto; } *, *::before, *::after { transition: none !important; } }
+        @media print { .article-toc, .mobile-toc, .back-top { display: none; } .article-layout { display: block; padding: 0; } .article-card { padding: 0; border: 0; } .article-figure { break-inside: avoid; } }
+    </style>
 </head>
-<body>
-  <p><a href="../../">返回 AMDL 官网</a></p>
-  <h1>Apple Music Token 设置说明</h1>
-  <p>AMDL 的官方逐字歌词渠道需要授权信息。设置中的两个字段对应请求头 <code>Authorization</code> 和 <code>Media-User-Token</code>；普通客户端缓存和 QQ 音乐渠道不依赖用户 Token。</p>
-  <h2>填写自己的授权信息</h2>
-  <ol>
-    <li>在自己的浏览器打开 <a href="https://music.apple.com/">Apple Music 网页播放器</a>，登录自己的账户并播放可用歌曲。</li>
-    <li>打开浏览器开发者工具的 Network（网络）面板，刷新页面，查看播放器发出的 Apple Music 请求。可尝试按 <code>amp-api.music.apple.com</code> 筛选。</li>
-    <li>在请求头中找到 <code>Authorization</code> 和 <code>Media-User-Token</code>。网页版本和请求类型可能不同，并非每个请求都有这两个字段。</li>
-    <li>在 AMDL「歌词渠道」展开 Token 设置，将授权值填入对应字段。Authorization 包含 <code>Bearer</code> 前缀时保留完整值。</li>
-    <li>点击「保存并生效」。当前歌曲会重新检索歌词；歌词不存在、账户授权或接口限制仍可能导致没有逐字结果。</li>
-  </ol>
-  <p>Token 会过期。遇到授权失败时，重新登录网页播放器并更新设置。不要把 Token 粘贴进公开 Issue、日志截图或主题文件。</p>
-  <h2>开发者接入</h2>
-  <p>开发者 Token 与用户 Token 的正式获取流程请参阅 <a href="https://developer.apple.com/documentation/applemusicapi/user-authentication-for-musickit">Apple MusicKit 用户授权文档</a>。AMDL 目前不提供应用内登录或自动续期。</p>
-  <p>此页随仓库的静态官网发布；仅修改本地文件不会更新线上站点。</p>
+<body id="page-top">
+    <!-- amdl:header -->
+<header class="site-header">
+    <a href="#main-content" class="skip-link">跳到正文</a>
+    <a href="../../index.html" class="brand" aria-label="AMDL 官网首页">
+        <img src="../../assets/app-icon.png" alt="AMDL 图标" width="32" height="32">
+        AMDL
+    </a>
+    <nav class="nav-links" aria-label="主导航">
+        <a href="../../help/get-token/index.html" aria-current="page">帮助</a>
+        <a href="https://github.com/ElliottZhao666666/AM-Desktop-Lyrics" target="_blank" rel="noopener">GitHub 仓库</a>
+        <a href="https://www.ybjun.com" target="_blank" rel="noopener">月半菌</a>
+    </nav>
+</header>
+<!-- /amdl:header -->
+    <main id="main-content">
+        <div class="article-layout">
+            <article class="article-card" aria-labelledby="article-title">
+                <header class="article-header">
+                    <nav class="breadcrumb" aria-label="面包屑导航"><ol><li><a href="../../index.html">AMDL 官网</a></li><li aria-current="page">Token 获取与设置</li></ol></nav>
+                    <h1 id="article-title">Apple Music Token 获取与设置教程</h1>
+                </header>
+                <details class="mobile-toc"><summary>本页目录</summary><nav aria-label="文章目录"><a href="#before-you-start">开始之前</a><a href="#get-token">获取方法</a><a href="#token-types">这两个 Token 是什么？</a><a href="#token-expiry">Token 的有效期</a><a href="#usage-notes">使用注意事项</a></nav></details>
+<section class="article-section" aria-labelledby="before-you-start">
+<h2 id="before-you-start">开始之前</h2>
+<p>AMDL 使用 Apple Music 官方 API 获取逐字歌词，但要使用此渠道，则须填写授权信息，否则无法使用。其他歌词渠道（如普通客户端缓存和 QQ 音乐渠道等）则不依赖任何用户 Token。</p>
+<p>授权信息包括<code>Authorization</code>和<code>Media-User-Token</code>两部分，本文介绍如何获取这两个 Token。</p>
+<figure class="article-figure"><a href="token-settings.png" target="_blank" rel="noopener" aria-label="查看原图：AMDL 歌词渠道中的 Token 设置入口"><img src="token-settings.png" alt="AMDL 歌词渠道中的 Token 设置入口" width="2324" height="1420" fetchpriority="high" decoding="async"></a><figcaption>AMDL 歌词渠道中的 Token 设置入口 · 点击查看原图</figcaption></figure>
+</section>
+<section class="article-section" aria-labelledby="get-token">
+<h2 id="get-token">获取方法</h2>
+<ol class="steps" role="list">
+<li><h3>登录网页播放器，打开开发者工具</h3>
+<p>在自己的浏览器打开 <a href="https://music.apple.com/" target="_blank" rel="noopener">Apple Music 网页</a>，建议使用 Chrome 或 Edge。打开后先登录自己的账号（<strong>账号必须已经有 Apple Music 的订阅</strong>）。然后按键盘上的<code>F12</code>，启动开发工具（DevTools）。</p>
+<figure class="article-figure"><a href="step-1-open-devtools.png" target="_blank" rel="noopener" aria-label="查看原图：按 F12 打开浏览器开发者工具"><img src="step-1-open-devtools.png" alt="按 F12 打开浏览器开发者工具" width="2644" height="1576" loading="lazy" decoding="async"></a><figcaption>按 F12 打开浏览器开发者工具 · 点击查看原图</figcaption></figure>
+
+</li>
+<li><h3>切换到“网络”选项卡</h3>
+<p>点击开发者工具上方的<strong>网络</strong>选项卡（<em>没找到的话，点上方选项卡最右侧加号并在弹出菜单中找</em>），做好准备。</p>
+<figure class="article-figure"><a href="step-2-network-panel.png" target="_blank" rel="noopener" aria-label="查看原图：切换到开发者工具的网络面板"><img src="step-2-network-panel.png" alt="切换到开发者工具的网络面板" width="2644" height="1576" loading="lazy" decoding="async"></a><figcaption>切换到开发者工具的网络面板 · 点击查看原图</figcaption></figure>
+
+</li>
+<li><h3>播放歌曲，筛选 Apple Music 请求</h3>
+<p>在左栏界面中随便播放一首歌，确保其正常加载，并且已经播放。与此同时，在右侧网络界面的 <strong>筛选器</strong> 中输入<code>amp-api</code>，进行关键词筛选。此时下方会列出所有对<code>amp-api.music.apple.com</code>的请求。</p>
+<figure class="article-figure"><a href="step-3-filter-requests.png" target="_blank" rel="noopener" aria-label="查看原图：输入 amp-api 筛选 Apple Music 接口请求"><img src="step-3-filter-requests.png" alt="输入 amp-api 筛选 Apple Music 接口请求" width="1204" height="1576" loading="lazy" decoding="async"></a><figcaption>输入 amp-api 筛选 Apple Music 接口请求 · 点击查看原图</figcaption></figure>
+
+</li>
+<li><h3>复制 Authorization</h3>
+<p>随便单击一个请求，在弹出的右栏中选<strong>标头</strong>，向下滚动找到<strong>Request Headers（请求头）</strong>，找到其中的<code>authorization</code>，在对应内容上<strong>右击选择“复制值”</strong>，将其粘贴到 AMDL 设置内的<code>Authorization Token</code>中。</p>
+<figure class="article-figure"><a href="step-4-authorization-header.png" target="_blank" rel="noopener" aria-label="查看原图：在请求头中找到 Authorization 并复制完整值"><img src="step-4-authorization-header.png" alt="在请求头中找到 Authorization 并复制完整值" width="1220" height="1178" loading="lazy" decoding="async"></a><figcaption>在请求头中找到 Authorization 并复制完整值 · 点击查看原图</figcaption></figure>
+
+
+
+
+<figure class="article-figure"><a href="step-4-fill-authorization.png" target="_blank" rel="noopener" aria-label="查看原图：将授权值填入 AMDL 的 Authorization Token"><img src="step-4-fill-authorization.png" alt="将授权值填入 AMDL 的 Authorization Token" width="2192" height="978" loading="lazy" decoding="async"></a><figcaption>将授权值填入 AMDL 的 Authorization Token · 点击查看原图</figcaption></figure>
+
+</li>
+<li><h3>复制 Media-User-Token</h3>
+<p>在<code>Request Headers</code>栏目下继续往下找，找到<code>Media-User-Token</code>，将其值复制到AMDL 设置内的<code>Media User Token</code>中。</p>
+<figure class="article-figure"><a href="step-5-media-user-token.png" target="_blank" rel="noopener" aria-label="查看原图：复制 Media-User-Token 并填入 AMDL 的 Media User Token"><img src="step-5-media-user-token.png" alt="复制 Media-User-Token 并填入 AMDL 的 Media User Token" width="1970" height="1174" loading="lazy" decoding="async"></a><figcaption>复制 Media-User-Token 并填入 AMDL 的 Media User Token · 点击查看原图</figcaption></figure>
+
+</li>
+<li><h3>保存并生效</h3>
+<p>点击 AMDL 设置窗口最下方 <strong>保存并生效</strong> 按钮，该配置会即刻保存到本地配置文件，如果你已提前打开逐字歌词的渠道，软件会立即向 Apple Music API 申请逐字歌词并更新显示。</p>
+</li>
+</ol>
+</section>
+<section class="article-section" aria-labelledby="token-notes">
+<h2 id="token-notes">说明和注意事项</h2>
+<h3 id="token-types">1. 这两个 Token 是什么？</h3>
+<p>Apple Music 网页版与后端服务器通信时，采用的是“双重鉴权”机制：</p>
+<ul>
+<li><strong><code>Authorization</code>（开发者/客户端令牌）</strong>：这是一个以 <code>Bearer eyJ...</code> 开头的超长字符串（标准 JWT 格式）。它并非你的个人隐私信息，而是 Apple 签发给“Apple Music 网页端播放器”的<strong>全局通用通行证</strong>，用于向服务器证明请求来自官方认可的客户端。为了方便大家使用，AMDL 会在软件内<strong>默认内置</strong>版本发布时最新的 <code>Authorization</code>，如果你的使用时间距发布时间较长建议自己手动再复制覆盖一下。</li>
+<li><strong><code>Media-User-Token</code>（用户身份凭证）</strong>：这是一个相对较短的加密字符串（在部分旧版文档或接口中也被称为 <code>Music-User-Token</code>）。它是<strong>验证你个人 Apple Music 订阅会员身份的核心凭证</strong>。因为逐字歌词属于 Apple Music 的核心版权曲库资源，苹果服务器必须通过该 Token 确认你的账号拥有有效订阅后，才会下发逐字 TTML 数据。</li>
+</ul>
+<h3 id="token-expiry">2. Token 的有效期有多长？</h3>
+<p>这两个凭证并不是永久有效的，它们各自的生命周期如下：</p>
+<ul>
+<li><strong><code>Authorization</code> 的有效期</strong>：苹果官方签发的网页端公用 Token 有效期通常在 <strong>2 到 6 个月</strong> 左右。只有当苹果在网页端轮换了新密钥时，你才需要按照上文步骤重新抓取替换（或者直接等待 AMDL 发布新版本更新内置默认值）。</li>
+<li><strong><code>Media-User-Token</code> 的有效期</strong>：个人凭证的有效期通常为 <strong>数周至数月不等</strong>（一般在 1~6 个月之间）。只要你不主动退出网页端，它可以稳定维持很长时间。但如果你执行了以下操作，该 Token 可能会<strong>立即失效</strong>：<ul>
+<li>在获取 Token 的浏览器中，手动点击了 Apple Music 网页版的“退出登录”；</li>
+<li>修改了你的 Apple ID 密码或重置了安全设置；</li>
+<li>你的 Apple Music 会员订阅到期且未续费。</li>
+</ul>
+</li>
+<li><strong>过期表现</strong>：如果某天你发现原本正常的逐字歌词突然回退到了普通逐行歌词，或者在软件日志中看到 <code>HTTP 401 Unauthorized</code> 报错，就说明 Token 过期了。此时只需按上文步骤重新复制一次填入即可。</li>
+</ul>
+<h3 id="usage-notes">3. 使用过程中的注意事项</h3>
+<ul>
+<li><strong>切勿点击网页端“退出登录”</strong>：成功提取 <code>Media-User-Token</code> 后，你可以<strong>直接关闭</strong>浏览器标签页或整个浏览器，但<strong>千万不要</strong>在网页上点击“Sign Out（退出登录）”。一旦点击退出，苹果服务器会立刻注销该会话，导致你刚复制的 Token 当场作废。</li>
+<li><strong>隐私与数据安全声明</strong>：<code>Media-User-Token</code> 相当于你在 Apple Music 上的登录态凭证，<strong>请勿将其截图或明文分享给他人</strong>。AMDL 是一款纯本地运行的开源工具，你填写的 Token 仅会保存在你电脑本地的配置文件中，绝不会上传至任何第三方服务器，仅在向苹果官方接口（<code>amp-api.music.apple.com</code>）请求歌词时直连使用。</li>
+<li><strong>格式完整性检查</strong>：<ul>
+<li>复制 <code>Authorization</code> 时，请务必确保开头包含了 <code>Bearer </code> 前缀以及后面的一个空格（例如：<code>Bearer eyJ0eXAi...</code>）。</li>
+<li>复制这两个 Token 时，注意检查首尾不要多复制了多余的空格、换行符或双引号。</li>
+</ul>
+</li>
+<li><strong>国区曲库与客户端联动说明</strong>：<ul>
+<li>目前 AMDL 的逐字歌词接口默认针对 <strong>中国大陆区（CN）</strong> 曲库构建。请确保你登录的 Apple ID 为国区账号且拥有有效订阅。</li>
+<li><strong>重要机制</strong>：为了保证百分百的匹配准确率，AMDL 的逐字歌词渠道需要借助 <strong>Apple Music Windows 客户端</strong>生成的本地缓存来提取精准的歌曲 ID（Track ID）。因此，日常听歌时推荐继续使用 Windows 客户端播放；切歌时由于需要等待客户端生成缓存并请求官方 API，首次加载某首歌的逐字歌词可能会有 0.5~1 秒左右的正常延迟。</li>
+</ul>
+</li>
+</ul>
+</section>
+
+                <div class="article-meta"><p>作者：<a href="https://www.ybjun.com" rel="author noopener" target="_blank">月半菌</a> · 更新于 <time datetime="2026-10-14">2026-10-14</time></p></div>
+                <a class="back-top" href="#page-top">返回顶部 ↑</a>
+            </article>
+            <aside class="article-toc" aria-label="文章目录"><p class="toc-title">本页内容</p><nav><a href="#before-you-start">开始之前</a><a href="#get-token">获取方法</a><a href="#token-types">这两个 Token 是什么？</a><a href="#token-expiry">Token 的有效期</a><a href="#usage-notes">使用注意事项</a></nav></aside>
+        </div>
+    </main>
+    <!-- amdl:footer -->
+<footer class="site-footer">
+    <p>AMDL 属于开源项目。Apple Music 是 Apple Inc. 的商标。</p>
+    <p>Designed &amp; Developed by <a href="https://www.ybjun.com" target="_blank" rel="noopener">月半菌</a>. All rights reserved.</p>
+</footer>
+<!-- /amdl:footer -->
 </body>
 </html>

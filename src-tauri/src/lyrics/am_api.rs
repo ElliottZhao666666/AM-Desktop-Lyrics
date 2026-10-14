@@ -171,6 +171,118 @@ fn parse_itunes(value: &serde_json::Value) -> BTreeMap<String, CatalogSong> {
         .collect()
 }
 
+fn cached_songs() -> BTreeMap<String, CatalogSong> {
+    let Ok(mut guard) = SONG_METADATA.lock() else {
+        return BTreeMap::new();
+    };
+    guard
+        .get_or_insert_with(|| {
+            crate::app_paths::data_dir()
+                .ok()
+                .and_then(|path| std::fs::read(path.join("apple-song-metadata.json")).ok())
+                .and_then(|bytes| serde_json::from_slice(&bytes).ok())
+                .unwrap_or_default()
+        })
+        .clone()
+}
+
+fn select_song(
+    track: &TrackIdentity,
+    duration: u64,
+    songs: &BTreeMap<String, CatalogSong>,
+) -> Result<Option<CatalogSong>, String> {
+    let mut ranked: Vec<_> = songs
+        .values()
+        .filter_map(|song| {
+            let score =
+                super::matching::score_candidate(track, duration, &song.track, song.duration_ms);
+            score.acceptable.then_some((score.total, song))
+        })
+        .collect();
+    ranked.sort_by_key(|(score, _)| std::cmp::Reverse(*score));
+    if ranked.len() > 1 && ranked[0].0 == ranked[1].0 {
+        return Err("找到多个同等匹配的 Apple Music 版本，请补全专辑信息或手动填写 ID".into());
+    }
+    Ok(ranked.first().map(|(_, song)| (*song).clone()))
+}
+
+pub(crate) fn cached_song(track: &TrackIdentity, duration: u64) -> Option<CatalogSong> {
+    select_song(track, duration, &cached_songs()).ok().flatten()
+}
+
+/// 编辑器复用 Apple 元数据模块和通用匹配评分；不会把 QQ 歌曲 ID 当作 Apple ID。
+pub async fn search_song_id(track: &TrackIdentity) -> Result<String, String> {
+    if let Some(song) = cached_song(track, 0) {
+        return Ok(song.id);
+    }
+    let tokens = crate::config::read_config()?.am_api_tokens;
+    let client = client().map_err(|error| error.to_string())?;
+    let term = format!(
+        "{} {} {}",
+        track.title,
+        track.artist,
+        track.album.as_deref().unwrap_or_default()
+    );
+    let mut songs = BTreeMap::new();
+    if !tokens.auth_token.trim().is_empty() {
+        let request = client
+            .get("https://amp-api.music.apple.com/v1/catalog/cn/search")
+            .query(&[
+                ("term", term.as_str()),
+                ("types", "songs"),
+                ("limit", "25"),
+                ("l", "zh-Hans-CN"),
+            ]);
+        if let Ok(response) = authorize(request, &tokens).send().await {
+            if response.status().is_success() {
+                if let Ok(value) = response.json::<serde_json::Value>().await {
+                    if let Some(results) = value.pointer("/results/songs") {
+                        songs.extend(parse_catalog(results));
+                    }
+                }
+            }
+        }
+    }
+    if select_song(track, 0, &songs)?.is_none() {
+        let response = client
+            .get("https://itunes.apple.com/search")
+            .query(&[
+                ("term", term.as_str()),
+                ("entity", "song"),
+                ("country", "cn"),
+                ("limit", "50"),
+            ])
+            .send()
+            .await
+            .map_err(|error| format!("搜索 Apple Music 歌曲失败：{error}"))?
+            .error_for_status()
+            .map_err(|error| format!("搜索 Apple Music 歌曲失败：{error}"))?;
+        songs.extend(parse_itunes(
+            &response
+                .json::<serde_json::Value>()
+                .await
+                .map_err(|error| error.to_string())?,
+        ));
+    }
+    let song = select_song(track, 0, &songs)?.ok_or(
+        "未找到歌名、艺人和版本信息均匹配的 Apple Music 歌曲，可补充信息重试或手动填写 ID",
+    )?;
+    let path = crate::app_paths::data_dir()?.join("apple-song-metadata.json");
+    let loaded = cached_songs();
+    let mut guard = SONG_METADATA.lock().map_err(|_| "歌曲元数据锁已损坏")?;
+    let cached = guard.get_or_insert(loaded);
+    cached.extend(songs);
+    crate::settings_store::atomic_write(
+        &path,
+        &serde_json::to_vec(&cached).map_err(|error| error.to_string())?,
+    )?;
+    println!(
+        "[歌词池] 歌曲 ID 匹配成功: {} - {}，id={}",
+        track.title, track.artist, song.id
+    );
+    Ok(song.id)
+}
+
 /// 获取 Apple Music 官方 syllable lyrics 原始响应。
 /// `tokens.auth_token` 会原样写入 Authorization，不会覆盖用户输入。
 pub async fn fetch_syllable_lyrics(
@@ -196,6 +308,34 @@ pub async fn fetch_syllable_lyrics(
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn editor_id_selection_reuses_identity_score_and_rejects_ambiguity() {
+        let target = TrackIdentity {
+            title: "Song".into(),
+            artist: "Artist".into(),
+            album: Some("Album".into()),
+        };
+        let mut songs = BTreeMap::from([(
+            "1".into(),
+            CatalogSong {
+                id: "1".into(),
+                track: target.clone(),
+                duration_ms: None,
+            },
+        )]);
+        assert_eq!(select_song(&target, 0, &songs).unwrap().unwrap().id, "1");
+        songs.insert(
+            "2".into(),
+            CatalogSong {
+                id: "2".into(),
+                track: target.clone(),
+                duration_ms: None,
+            },
+        );
+        assert!(select_song(&target, 0, &songs).is_err());
+        songs.get_mut("2").unwrap().track.artist = "Other".into();
+        assert_eq!(select_song(&target, 0, &songs).unwrap().unwrap().id, "1");
+    }
     #[test]
     fn catalog_metadata_contains_identity_instead_of_only_duration() {
         let value = serde_json::json!({"data":[{"id":"123","attributes":{"name":"玻璃","artistName":"Gareth.T","albumName":"玻璃 demo - Single","durationInMillis":185041}}]});

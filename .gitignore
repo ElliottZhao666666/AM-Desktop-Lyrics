@@ -19,6 +19,7 @@ dist-ssr
 src-tauri/tauri.local.conf.json
 
 # 本地开发验证脚本、临时夹具和复盘记录（保留正式构建脚本及站点文件）
+/docs/codex-md-drafts/
 /scripts/test-*.cjs
 /scripts/fixtures/
 /docs/REVIEW-*.md

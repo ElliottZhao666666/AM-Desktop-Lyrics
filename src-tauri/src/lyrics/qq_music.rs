@@ -192,6 +192,9 @@ pub async fn fetch_lyrics_by_song(
         source: LyricsSource::QqMusic,
         duration_ms: candidate.duration_ms,
         lines,
+        storage: crate::domain::LyricsStorage {
+            apple_music_id: None, timing: Some(crate::domain::LyricsTiming::Line),
+        },
     }))
 }
 

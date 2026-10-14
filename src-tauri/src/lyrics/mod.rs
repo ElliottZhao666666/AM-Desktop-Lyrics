@@ -7,6 +7,7 @@ pub mod lrc;
 pub mod matching;
 pub mod models;
 pub mod provider;
+pub mod pool_management;
 pub mod qq_music;
 pub mod ttml;
 pub mod ttml_parser;

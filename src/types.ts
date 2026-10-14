@@ -27,7 +27,24 @@ export interface LyricsDocument {
   source: LyricsSource;
   lines: LyricLine[];
   duration_ms: number | null;
+  storage?: { apple_music_id: string | null; timing: LyricsTiming | null };
 }
+
+export type LyricsTiming = 'word' | 'line';
+export type LyricsRefetchSource = 'all' | 'appleMusicApi' | 'appleMusicCache' | 'qqMusic';
+export type LyricsPoolKind = 'cache' | 'manual';
+export interface LyricsPoolEntry {
+  id: string;
+  revision: string;
+  track: TrackIdentity;
+  appleMusicId: string | null;
+  timing: LyricsTiming;
+}
+export interface LyricsPoolDetail {
+  entry: LyricsPoolEntry;
+  lyricsText: string;
+}
+export interface LyricsPoolValidation { timing: LyricsTiming; lineCount: number }
 
 export interface MediaStatePayload {
   track: TrackIdentity;

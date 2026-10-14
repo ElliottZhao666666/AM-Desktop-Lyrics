@@ -3,13 +3,10 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <link rel="canonical" href="https://amdl.ybjun.com/">
     
     <!-- 基础 SEO -->
     <title>AMDL - 专为 Windows 版 Apple Music 打造的现代化桌面歌词工具</title>
-    <!-- 网页标签页图标 -->
-    <link rel="icon" type="image/png" href="assets/app-icon.png">
-    <!-- 苹果设备保存到主屏幕时的图标 -->
-    <link rel="apple-touch-icon" href="assets/app-icon.png">
     <meta name="description" content="AMDL 是一款专为 Windows 版 Apple Music 打造的开源桌面歌词工具。支持智能/手动歌词匹配、高度自定义外观、逐字歌词以及繁简体自动转换。由月半菌开发。">
     <meta name="keywords" content="Apple Music 桌面歌词, AMDL, Windows Apple Music, 歌词匹配, 桌面歌词工具, 动态歌词, 月半菌">
     <meta name="author" content="月半菌">
@@ -45,72 +42,12 @@
     }
     </script>
 
+    <!-- amdl:head -->
+<link rel="stylesheet" href="assets/site.css">
+<link rel="icon" type="image/png" href="assets/app-icon.png">
+<link rel="apple-touch-icon" href="assets/app-icon.png">
+<!-- /amdl:head -->
     <style>
-        :root {
-            --am-pink: #fa233b;
-            --am-pink-dark: #d13c86;
-            --text-main: #1d1d1f;
-            --text-muted: #86868b;
-            --bg-color: #fbfbfd;
-            --section-bg: #ffffff;
-        }
-
-        body {
-            margin: 0;
-            padding: 0;
-            font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "Microsoft YaHei", sans-serif;
-            background-color: var(--bg-color);
-            color: var(--text-main);
-            line-height: 1.6;
-            overflow-x: hidden;
-        }
-
-        /* 顶部导航 */
-        header {
-            display: flex;
-            justify-content: space-between;
-            align-items: center;
-            padding: 16px 5%;
-            background: rgba(251, 251, 253, 0.85);
-            backdrop-filter: blur(20px);
-            -webkit-backdrop-filter: blur(20px);
-            position: fixed;
-            top: 0;
-            width: 100%;
-            box-sizing: border-box;
-            z-index: 1000;
-            border-bottom: 1px solid rgba(0,0,0,0.05);
-        }
-
-        .brand {
-            display: flex;
-            align-items: center;
-            gap: 12px;
-            font-size: 18px;
-            font-weight: 700;
-            color: var(--text-main);
-            text-decoration: none;
-        }
-
-        .brand img {
-            width: 32px;
-            height: 32px;
-            border-radius: 8px;
-        }
-
-        .nav-links a {
-            text-decoration: none;
-            color: var(--text-main);
-            font-size: 14px;
-            font-weight: 500;
-            margin-left: 24px;
-            transition: color 0.2s;
-        }
-
-        .nav-links a:hover {
-            color: var(--am-pink);
-        }
-
         /* 核心视觉区 (Hero Section) */
         .hero {
             padding: 140px 20px 80px;
@@ -240,26 +177,6 @@
             border: 1px solid rgba(0,0,0,0.05);
         }
 
-        /* 底部版权 */
-        footer {
-            padding: 40px 20px;
-            text-align: center;
-            background-color: var(--bg-color);
-            font-size: 13px;
-            color: var(--text-muted);
-            border-top: 1px solid rgba(0,0,0,0.05);
-        }
-
-        footer a {
-            color: var(--am-pink-dark);
-            text-decoration: none;
-            font-weight: 600;
-        }
-
-        footer a:hover {
-            text-decoration: underline;
-        }
-
         /* 响应式 */
         @media (max-width: 860px) {
             h1 { font-size: 36px; }
@@ -271,23 +188,29 @@
                 margin-bottom: 70px;
             }
         }
+
+
     </style>
 </head>
 <body>
 
     <!-- 导航栏 -->
-    <header>
-        <a href="/" class="brand">
-            <img src="assets/app-icon.png" alt="AMDL 图标">
-            AMDL
-        </a>
-        <nav class="nav-links">
-            <a href="https://github.com/ElliottZhao666666/AM-Desktop-Lyrics" target="_blank" rel="noopener">GitHub 仓库</a>
-            <a href="https://www.ybjun.com" target="_blank" rel="noopener">月半菌</a>
-        </nav>
-    </header>
+    <!-- amdl:header -->
+<header class="site-header">
+    <a href="#main-content" class="skip-link">跳到正文</a>
+    <a href="index.html" class="brand" aria-label="AMDL 官网首页">
+        <img src="assets/app-icon.png" alt="AMDL 图标" width="32" height="32">
+        AMDL
+    </a>
+    <nav class="nav-links" aria-label="主导航">
+        <a href="help/get-token/index.html">帮助</a>
+        <a href="https://github.com/ElliottZhao666666/AM-Desktop-Lyrics" target="_blank" rel="noopener">GitHub 仓库</a>
+        <a href="https://www.ybjun.com" target="_blank" rel="noopener">月半菌</a>
+    </nav>
+</header>
+<!-- /amdl:header -->
 
-    <main>
+    <main id="main-content">
         <!-- 主视觉区 -->
         <section class="hero">
             <h1>AMDL - <span class="highlight">Apple Music 桌面歌词</span></h1>
@@ -334,10 +257,12 @@
     </main>
 
     <!-- 底部 -->
-    <footer>
-        <p>AMDL 属于开源项目。Apple Music 是 Apple Inc. 的商标。</p>
-        <p>Designed & Developed by <a href="https://www.ybjun.com" target="_blank" rel="noopener">月半菌</a>. All rights reserved.</p>
-    </footer>
+    <!-- amdl:footer -->
+<footer class="site-footer">
+    <p>AMDL 属于开源项目。Apple Music 是 Apple Inc. 的商标。</p>
+    <p>Designed &amp; Developed by <a href="https://www.ybjun.com" target="_blank" rel="noopener">月半菌</a>. All rights reserved.</p>
+</footer>
+<!-- /amdl:footer -->
 
 </body>
 </html>

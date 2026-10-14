@@ -12,7 +12,8 @@ static CUSTOM_POOL_LOCK: Mutex<()> = Mutex::new(());
 #[serde(rename_all = "camelCase")]
 struct CustomLyricsRecord {
     track: TrackIdentity,
-    selected_song: QqSongCandidate,
+    #[serde(default)]
+    selected_song: Option<QqSongCandidate>,
     document: LyricsDocument,
 }
 
@@ -48,15 +49,31 @@ pub fn save(
         .map_err(|_| "自定义歌词池文件锁已损坏".to_string())?;
     document.track = track.clone();
     document.source = LyricsSource::Manual;
+    document.storage.timing = Some(
+        if document.lines.iter().any(|line| !line.words.is_empty()) {
+            crate::domain::LyricsTiming::Word
+        } else {
+            crate::domain::LyricsTiming::Line
+        },
+    );
+    if document.storage.apple_music_id.is_none() {
+        document.storage.apple_music_id =
+            super::am_api::cached_song(track, document.duration_ms.unwrap_or(0))
+                .map(|song| song.id);
+    }
     let mut pool = load_pool()?;
     pool.insert(
         track_key(track),
         CustomLyricsRecord {
             track: track.clone(),
-            selected_song,
+            selected_song: Some(selected_song),
             document,
         },
     );
+    write_pool(&pool)
+}
+
+fn write_pool(pool: &CustomLyricsPool) -> Result<(), String> {
     let path = crate::app_paths::custom_lyrics_file()?;
     let parent = path
         .parent()
@@ -66,6 +83,67 @@ pub fn save(
     let text = serde_json::to_string_pretty(&pool)
         .map_err(|error| format!("序列化自定义歌词池失败: {error}"))?;
     crate::settings_store::atomic_write(&path, text.as_bytes())
+}
+
+pub(crate) fn list() -> Result<Vec<(String, LyricsDocument)>, String> {
+    let _guard = CUSTOM_POOL_LOCK.lock().map_err(|_| "手动匹配池锁已损坏")?;
+    Ok(load_pool()?
+        .into_iter()
+        .map(|(id, record)| (id, record.document))
+        .collect())
+}
+
+pub(crate) fn managed_save(
+    id: Option<&str>,
+    revision: Option<&str>,
+    mut document: LyricsDocument,
+) -> Result<String, String> {
+    let _guard = CUSTOM_POOL_LOCK.lock().map_err(|_| "手动匹配池锁已损坏")?;
+    let mut pool = load_pool()?;
+    let original = if let Some(id) = id {
+        let record = pool.get(id).ok_or("该条目已不存在，请刷新列表")?;
+        super::pool_management::check_revision(&record.document, revision)?;
+        Some(record.clone())
+    } else {
+        None
+    };
+    let key = track_key(&document.track);
+    if pool.iter().any(|(other_id, record)| {
+        Some(other_id.as_str()) != id && same_track(&record.track, &document.track)
+    }) {
+        return Err("手动匹配池已有这首歌曲，请选择已有条目编辑".into());
+    }
+    if let Some(id) = id {
+        pool.remove(id);
+    }
+    document.source = LyricsSource::Manual;
+    document.storage.timing = Some(
+        if document.lines.iter().any(|line| !line.words.is_empty()) {
+            crate::domain::LyricsTiming::Word
+        } else {
+            crate::domain::LyricsTiming::Line
+        },
+    );
+    pool.insert(
+        key.clone(),
+        CustomLyricsRecord {
+            track: document.track.clone(),
+            selected_song: original.and_then(|record| record.selected_song),
+            document,
+        },
+    );
+    write_pool(&pool)?;
+    Ok(key)
+}
+
+pub(crate) fn managed_delete(id: &str, revision: &str) -> Result<LyricsDocument, String> {
+    let _guard = CUSTOM_POOL_LOCK.lock().map_err(|_| "手动匹配池锁已损坏")?;
+    let mut pool = load_pool()?;
+    let record = pool.get(id).ok_or("该条目已不存在，请刷新列表")?;
+    super::pool_management::check_revision(&record.document, Some(revision))?;
+    let document = pool.remove(id).unwrap().document;
+    write_pool(&pool)?;
+    Ok(document)
 }
 
 fn load_pool() -> Result<CustomLyricsPool, String> {
@@ -93,7 +171,7 @@ fn track_key(track: &TrackIdentity) -> String {
     format!("{hash:016x}")
 }
 
-fn same_track(first: &TrackIdentity, second: &TrackIdentity) -> bool {
+pub(crate) fn same_track(first: &TrackIdentity, second: &TrackIdentity) -> bool {
     normalize(&first.title) == normalize(&second.title)
         && normalize(&first.artist) == normalize(&second.artist)
         && normalize(first.album.as_deref().unwrap_or(""))

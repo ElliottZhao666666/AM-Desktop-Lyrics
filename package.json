@@ -9,6 +9,8 @@
     "dev": "vite",
     "build": "vue-tsc --noEmit && vite build",
     "preview": "vite preview",
+    "site:build": "node scripts/build-site.mjs",
+    "site:check": "node scripts/build-site.mjs --check",
     "tauri": "tauri",
     "tauri:build:signed": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/build-signed.ps1"
   },

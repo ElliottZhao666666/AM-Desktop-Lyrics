@@ -203,7 +203,8 @@ fn save_settings(app: AppHandle, settings: AppSettings) -> Result<(), String> {
     };
     drop(runtime_offset_guard);
     apply_always_on_top(&app, settings.lyrics_window_always_on_top)?;
-    lyrics::provider::apply_cache_settings(settings.local_cache_limit as usize, conversion_changed);
+    lyrics::provider::apply_cache_settings(settings.local_cache_limit as usize, conversion_changed)?;
+    let _ = app.emit("lyrics-pools-changed", ());
     if conversion_changed {
         lyrics::provider::refresh_current_lyrics(app.clone());
     }
@@ -232,7 +233,7 @@ fn save_config(app: AppHandle, config: config::AppConfig) -> Result<(), String> 
     lyrics::provider::apply_cache_settings(
         get_settings()?.local_cache_limit as usize,
         previous.auto_chs != config.auto_chs,
-    );
+    )?;
     app.emit("settings-changed", get_settings()?)
         .map_err(|error| error.to_string())?;
     lyrics::provider::refresh_current_lyrics(app);
@@ -988,10 +989,17 @@ pub fn run() {
             logger::open_log_dir,
             lyrics::provider::search_qq_lyrics,
             lyrics::provider::preview_qq_lyrics,
-            lyrics::provider::rescan_local_lyrics,
-            lyrics::provider::refetch_qq_lyrics,
+            lyrics::provider::refetch_lyrics,
             lyrics::provider::apply_manual_lyrics,
             lyrics::provider::apply_custom_lyrics,
+            lyrics::pool_management::list_lyrics_pool,
+            lyrics::pool_management::get_lyrics_pool_entry,
+            lyrics::pool_management::validate_pool_lyrics,
+            lyrics::pool_management::save_lyrics_pool_entry,
+            lyrics::pool_management::delete_lyrics_pool_entry,
+            lyrics::pool_management::promote_lyrics_pool_entry,
+            lyrics::pool_management::resolve_pool_apple_music_id,
+            lyrics::pool_management::open_lyrics_pool_editor,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

@@ -165,11 +165,17 @@ pub fn parse_ttml_with_translation(
             }
         }
     }
+    let timing = if lines.iter().any(|line| !line.words.is_empty()) {
+        crate::domain::LyricsTiming::Word
+    } else { crate::domain::LyricsTiming::Line };
     Ok(LyricsDocument {
         track,
         source,
         lines,
         duration_ms,
+        storage: crate::domain::LyricsStorage {
+            apple_music_id: None, timing: Some(timing),
+        },
     })
 }
 fn collect_translations<'a>(node: &'a Element, output: &mut Vec<&'a Element>) {
