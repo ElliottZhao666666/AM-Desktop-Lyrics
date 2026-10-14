@@ -213,7 +213,7 @@ async fn fetch_document(
         if config.source_enabled("manual") {
             match custom_pool::get(track) {
                 Ok(Some(document)) => {
-                    println!("[歌词][请求{request_id}] 命中永久手动匹配，使用自选歌词池");
+                    println!("[歌词][请求{request_id}] 命中手动匹配池，使用对应歌词");
                     return Ok(Some(document));
                 }
                 Ok(None) => {}

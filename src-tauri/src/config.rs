@@ -52,19 +52,19 @@ fn default_lyrics_sources() -> Vec<LyricsSource> {
     vec![
         LyricsSource {
             id: "manual".into(),
-            name: "手动匹配结果".into(),
+            name: "手动匹配池".into(),
             enabled: true,
             priority: 1,
         },
         LyricsSource {
             id: "appleMusicApi".into(),
-            name: "Apple Music 逐字歌词".into(),
+            name: "Apple Music API".into(),
             enabled: true,
             priority: 2,
         },
         LyricsSource {
             id: "appleMusicCache".into(),
-            name: "Apple Music Windows 缓存歌词".into(),
+            name: "Apple Music 本地缓存".into(),
             enabled: true,
             priority: 3,
         },
@@ -97,11 +97,13 @@ impl AppConfig {
     pub fn normalize(mut self) -> Self {
         let defaults = default_lyrics_sources();
         for default_source in defaults {
-            if !self
+            if let Some(source) = self
                 .lyrics_sources
-                .iter()
-                .any(|source| source.id == default_source.id)
+                .iter_mut()
+                .find(|source| source.id == default_source.id)
             {
+                source.name = default_source.name;
+            } else {
                 self.lyrics_sources.push(default_source);
             }
         }
@@ -160,6 +162,22 @@ mod tests {
             .lyrics_sources
             .iter()
             .all(|source| !source.enabled));
+    }
+    #[test]
+    fn normalization_updates_legacy_names_without_changing_source_preferences() {
+        let mut config = AppConfig::default();
+        config.lyrics_sources[0].name = "手动匹配结果".into();
+        config.lyrics_sources[0].enabled = false;
+        config.lyrics_sources[0].priority = 7;
+        let config = config.normalize();
+        let manual = config
+            .lyrics_sources
+            .iter()
+            .find(|source| source.id == "manual")
+            .unwrap();
+        assert_eq!(manual.name, "手动匹配池");
+        assert!(!manual.enabled);
+        assert_eq!(manual.priority, 7);
     }
     #[test]
     fn token_defaults_are_identical_for_new_and_legacy_configuration() {

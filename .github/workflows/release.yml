@@ -1,13 +1,22 @@
 name: Release AMDL
 
 on:
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: '要构建的已有版本标签，例如 v1.0.1'
+        required: true
+        type: string
   push:
     tags:
       - 'v*'
 
 concurrency:
-  group: release-${{ github.ref }}
+  group: release-${{ inputs.tag || github.ref }}
   cancel-in-progress: false
+
+env:
+  RELEASE_TAG: ${{ inputs.tag || github.ref_name }}
 
 jobs:
   build-and-release:
@@ -18,6 +27,8 @@ jobs:
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
+        with:
+          ref: ${{ env.RELEASE_TAG }}
 
       - name: Install pnpm
         uses: pnpm/action-setup@v4
@@ -27,7 +38,7 @@ jobs:
       - name: Install Node.js
         uses: actions/setup-node@v4
         with:
-          node-version: 20
+          node-version: 22
           cache: pnpm
 
       - name: Install Rust
@@ -38,10 +49,18 @@ jobs:
       - name: Install frontend dependencies
         run: pnpm install --frozen-lockfile
 
+      - name: Check website framework
+        run: pnpm site:check
+
+      - name: Cache Rust build
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: './src-tauri -> target'
+
       - name: Verify release version
         shell: pwsh
         run: |
-          $tagVersion = '${{ github.ref_name }}'.TrimStart('v')
+          $tagVersion = $env:RELEASE_TAG -replace '^v', ''
           $packageVersion = (Get-Content package.json -Raw | ConvertFrom-Json).version
           $tauriVersion = (Get-Content src-tauri/tauri.conf.json -Raw | ConvertFrom-Json).version
           $cargoVersion = (Select-String -Path src-tauri/Cargo.toml -Pattern '^version\s*=\s*"([^"]+)"$').Matches[0].Groups[1].Value
@@ -56,12 +75,12 @@ jobs:
           TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_PRIVATE_KEY }}
           TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_KEY_PASSWORD }}
         with:
-          tagName: ${{ github.ref_name }}
-          releaseName: 'AMDL ${{ github.ref_name }}'
-          releaseBody: '自动化构建发布。详细更新日志请参考 README。'
+          tagName: ${{ env.RELEASE_TAG }}
+          releaseName: 'AMDL ${{ env.RELEASE_TAG }}'
+          releaseBody: 'AMDL 正式版本。功能说明与 Token 获取教程请参阅 README；完整更新日志见本 Release。'
           releaseDraft: true
           prerelease: false
-          args: --target x86_64-pc-windows-msvc --bundles nsis
+          args: --target x86_64-pc-windows-msvc --bundles nsis -- --locked
           updaterJsonPreferNsis: true
           uploadUpdaterJson: true
           uploadUpdaterSignatures: true

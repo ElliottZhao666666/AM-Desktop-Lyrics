@@ -16,8 +16,8 @@
         <div class="setting-row"><div><strong>歌词时间偏移 (ms)</strong><p>调整后即时生效；点击“应用”后写入配置，并在下次运行时读取。</p></div><input :value="lyricsOffsetInput" class="offset-input" type="text" inputmode="numeric" @input="updateLyricsOffsetInput" /></div>
         <div class="setting-row"><div><strong>自动转换繁体歌词到简体</strong><p>显示歌词时自动转换为简体。</p></div><button class="switch" :class="{ on: settings.autoConvertTraditionalToSimplified }" role="switch" :aria-checked="settings.autoConvertTraditionalToSimplified" @click="settings.autoConvertTraditionalToSimplified = !settings.autoConvertTraditionalToSimplified"><span /></button></div>
         <div class="setting-row"><div><strong>保持歌词面板置顶</strong><p>让歌词面板保持在最前，锁定时解锁按钮显示在歌词上方。</p></div><button class="switch" :class="{ on: settings.lyricsWindowAlwaysOnTop }" role="switch" aria-label="保持歌词面板置顶" :aria-checked="settings.lyricsWindowAlwaysOnTop" @click="settings.lyricsWindowAlwaysOnTop = !settings.lyricsWindowAlwaysOnTop"><span /></button></div>
-        <div class="setting-row"><div><strong>记忆歌词窗口位置和大小</strong><p>保存拖动和缩放后的歌词窗口状态。</p></div><button class="switch" :class="{ on: settings.rememberLyricsWindowBounds }" role="switch" :aria-checked="settings.rememberLyricsWindowBounds" @click="settings.rememberLyricsWindowBounds = !settings.rememberLyricsWindowBounds"><span /></button></div>
-        <div class="setting-row"><div><strong>歌词缓存歌曲数</strong><p>保存最近播放的歌词，重复播放时优先读取。</p></div><input v-model.number="settings.localCacheLimit" class="number-input" type="number" min="1" max="50" step="1" /></div>
+        <div class="setting-row"><div><strong>记忆歌词面板位置和大小</strong><p>保存拖动和缩放后的歌词面板状态。</p></div><button class="switch" :class="{ on: settings.rememberLyricsWindowBounds }" role="switch" :aria-checked="settings.rememberLyricsWindowBounds" @click="settings.rememberLyricsWindowBounds = !settings.rememberLyricsWindowBounds"><span /></button></div>
+        <div class="setting-row"><div><strong>缓存池歌曲数</strong><p>保存最近使用的歌词；减少数量并应用后，会立即移除超出数量的旧缓存。</p></div><input v-model.number="settings.localCacheLimit" class="number-input" type="number" min="1" max="50" step="1" /></div>
       </div>
 
       <div v-else-if="activeSection === 'appearance'" class="appearance-workspace">
@@ -81,7 +81,7 @@
         <div class="now-playing-strip">
           <div class="track-summary">
             <strong>{{ currentTrack.title || '等待播放...' }}</strong>
-            <span>{{ currentTrack.artist || '暂无歌手信息' }}</span>
+            <span>{{ currentTrack.artist || '暂无艺人信息' }}</span>
             <small>{{ currentTrack.album || '暂无专辑信息' }}</small>
           </div>
           <div class="match-quick-actions">
@@ -91,15 +91,15 @@
 
         <form class="match-search-form" @submit.prevent="searchLyrics">
           <label>歌名<input v-model="matchQuery.title" autocomplete="off" /></label>
-          <label>歌手<input v-model="matchQuery.artist" autocomplete="off" /></label>
+          <label>艺人<input v-model="matchQuery.artist" autocomplete="off" /></label>
           <label>专辑<input v-model="matchQuery.album" autocomplete="off" /></label>
           <button class="button primary search-button" type="submit" :disabled="matchBusy || !matchQuery.title.trim()"><Search :size="16" />搜索</button>
         </form>
 
         <div class="match-grid">
-          <section class="match-results" aria-label="Q音搜索结果">
+          <section class="match-results" aria-label="QQ 音乐搜索结果">
             <div class="pane-heading"><span>搜索结果</span><small>{{ matchCandidates.length }} 首</small></div>
-            <div v-if="matchBusy && !matchCandidates.length" class="match-placeholder">正在请求 Q音...</div>
+            <div v-if="searchBusy && !matchCandidates.length" class="match-placeholder">正在搜索 QQ 音乐…</div>
             <div v-else-if="!matchCandidates.length" class="match-placeholder">输入曲目信息后开始搜索</div>
             <button
               v-for="candidate in matchCandidates"
@@ -110,7 +110,7 @@
               @click="selectCandidate(candidate)"
             >
               <span class="candidate-title">{{ candidate.track.title }}</span>
-              <span>{{ candidate.track.artist || '未知歌手' }}</span>
+              <span>{{ candidate.track.artist || '未知艺人' }}</span>
               <span>{{ candidate.track.album || '未知专辑' }}</span>
               <time>{{ formatDuration(candidate.durationMs) }}</time>
             </button>
@@ -119,7 +119,7 @@
           <section class="lyrics-preview-pane">
             <div class="pane-heading"><span>歌词全文预览</span><small>{{ selectedCandidate?.track.title || '未选择' }}</small></div>
             <textarea :value="previewText" class="lyrics-preview" readonly spellcheck="false" aria-label="选中歌曲歌词全文" />
-            <div class="apply-lyrics-actions"><button class="button secondary apply-lyrics-button" :disabled="!selectedCandidate || !previewText || matchBusy || !canMatch" @click="applySelectedLyrics"><Check :size="16" />应用此歌词</button><button class="button primary apply-lyrics-button" :disabled="!selectedCandidate || !previewText || matchBusy || !canMatch" @click="applyAndAlwaysUseSelectedLyrics"><Check :size="16" />应用并始终使用此歌词</button></div>
+            <div class="apply-lyrics-actions"><button class="button secondary apply-lyrics-button" :disabled="!selectedCandidate || !previewText || matchBusy || !canMatch" @click="applySelectedLyrics"><Check :size="16" />应用此歌词</button><button class="button primary apply-lyrics-button" :disabled="!selectedCandidate || !previewText || matchBusy || !canMatch" @click="applyAndAlwaysUseSelectedLyrics"><Check :size="16" />应用并加入手动匹配池</button></div>
           </section>
         </div>
       </div>
@@ -129,7 +129,7 @@
         <div class="source-list">
           <div v-for="source in sortedLyricsSources" :key="source.id" class="source-card" :class="{ disabled: source.id === 'neteaseMusic' }">
             <div class="source-order">{{ source.priority }}</div>
-            <div class="source-info"><strong>{{ source.name }}</strong><p>{{ source.id === 'appleMusicApi' ? '需要 Apple Music API Token' : source.id === 'appleMusicCache' ? '读取 Apple Music Windows 版本地缓存' : source.id === 'qqMusic' ? '在线搜索 QQ 音乐歌词' : source.id === 'neteaseMusic' ? '暂未开放' : '使用匹配歌词页面中设置为始终使用的歌词' }}</p></div>
+            <div class="source-info"><strong>{{ source.name }}</strong><p>{{ source.id === 'appleMusicApi' ? '使用 Apple Music API 获取逐字或逐行歌词，需要配置 Token。' : source.id === 'appleMusicCache' ? '扫描 Apple Music Windows 客户端的本地缓存，与 AMDL 缓存池相互独立。' : source.id === 'qqMusic' ? '在线搜索并匹配 QQ 音乐歌词。' : source.id === 'neteaseMusic' ? '暂未开放。' : '使用手动匹配池中的对应歌词。' }}</p></div>
             <button v-if="source.id === 'appleMusicApi'" class="text-command" @click="tokensExpanded = !tokensExpanded">{{ tokensExpanded ? '收起 Token' : '配置 Token' }}</button>
             <button class="switch" :class="{ on: source.enabled }" :disabled="source.id === 'neteaseMusic'" role="switch" :aria-checked="source.enabled" @click="source.enabled = !source.enabled"><span /></button>
           </div>
@@ -137,7 +137,7 @@
         <div v-if="tokensExpanded" class="token-panel">
           <label>Authorization Token<input v-model="config.amApiTokens.authToken" type="password" autocomplete="off" /></label>
           <label>Media User Token<input v-model="config.amApiTokens.mediaUserToken" type="password" autocomplete="off" /></label>
-          <button class="text-command" @click="openExternal('https://amdl.ybjun.com/help/get-token')">帮助获取 Token</button>
+          <button class="text-command" @click="openExternal('https://amdl.ybjun.com/help/get-token')">Token 获取教程</button>
           <p>Token 仅保存在本机配置中，点击底部“保存并生效”后才会写入。</p>
         </div>
       </div>
@@ -190,7 +190,7 @@ import { getCurrentWindow } from '@tauri-apps/api/window';
 import { ask } from '@tauri-apps/plugin-dialog';
 import { openUrl } from '@tauri-apps/plugin-opener';
 import { relaunch } from '@tauri-apps/plugin-process';
-import { check } from '@tauri-apps/plugin-updater';
+import { check, type Update } from '@tauri-apps/plugin-updater';
 import { Check, CloudDownload, Database, FileText, FolderOpen, Info, Palette, RefreshCw, Save, Search, Settings2, Globe, GitBranch } from '@lucide/vue';
 import type { AppConfig, AppSettings, LyricsRefetchSource, MediaSnapshotPayload, MediaStatePayload, QqLyricsPreview, QqSongCandidate, RuntimeLyricsTimeOffset, ThemeFile, TrackIdentity } from '../types';
 import { buildThemeCss, cloneEditor, mergeThemeCss, restoreThemeEditor, DEFAULT_EDITOR, DEFAULT_THEME_CSS, PRESETS, type ThemeEditor } from '../theme';
@@ -391,7 +391,7 @@ async function applySelectedLyrics() {
   actionBusy.value = true;
   try {
     await invoke('apply_manual_lyrics', { track: currentTrack.value, candidate: selectedCandidate.value });
-    if (generation === actionGeneration) await showMessage('歌词已应用并覆盖普通缓存', { title: 'AMDL', kind: 'info' });
+    if (generation === actionGeneration) await showMessage('歌词已应用并保存到缓存池', { title: 'AMDL', kind: 'info' });
   } catch (error) { if (generation === actionGeneration) await showMessage(String(error), { title: '应用失败', kind: 'error' }); }
   finally { if (generation === actionGeneration) actionBusy.value = false; }
 }
@@ -400,7 +400,7 @@ async function applyAndAlwaysUseSelectedLyrics() {
   if (!selectedCandidate.value) return;
   const generation = ++actionGeneration;
   actionBusy.value = true;
-  try { await invoke('apply_custom_lyrics', { track: currentTrack.value, candidate: selectedCandidate.value }); if (generation === actionGeneration) await showMessage('歌词已应用并保存为永久匹配', { title: 'AMDL', kind: 'info' }); }
+  try { await invoke('apply_custom_lyrics', { track: currentTrack.value, candidate: selectedCandidate.value }); if (generation === actionGeneration) await showMessage('歌词已应用并加入手动匹配池', { title: 'AMDL', kind: 'info' }); }
   catch (error) { if (generation === actionGeneration) await showMessage(String(error), { title: '应用失败', kind: 'error' }); }
   finally { if (generation === actionGeneration) actionBusy.value = false; }
 }
@@ -523,9 +523,12 @@ async function openExternal(url: string) {
 async function checkForUpdates() {
   if (isCheckingUpdate.value) return;
   isCheckingUpdate.value = true;
+  let update: Update | null = null;
+  message.value = '正在检查更新…';
   try {
-    const update = await check();
+    update = await check({ timeout: 15000 });
     if (!update) {
+      message.value = '当前已是最新版本';
       await showMessage('当前已是最新版本', { title: 'AMDL', kind: 'info' });
       return;
     }
@@ -534,13 +537,23 @@ async function checkForUpdates() {
       `发现新版本 ${update.version}\n\n${releaseNotes}\n\n是否立即下载并安装？`,
       { title: 'AMDL 更新', kind: 'info' },
     );
-    if (!confirmed) return;
+    if (!confirmed) { message.value = '已取消更新'; return; }
     message.value = '正在下载并安装更新…';
-    await update.downloadAndInstall();
+    let received = 0;
+    let total = 0;
+    await update.downloadAndInstall((event) => {
+      if (event.event === 'Started') { received = 0; total = event.data.contentLength ?? 0; }
+      else if (event.event === 'Progress') {
+        received += event.data.chunkLength;
+        message.value = total > 0 ? `正在下载更新… ${Math.min(100, Math.floor(received / total * 100))}%` : '正在下载更新…';
+      } else message.value = '下载完成，正在验证并安装…';
+    });
     await relaunch();
   } catch (error) {
-    await showMessage(`检查更新失败：${String(error)}`, { title: 'AMDL', kind: 'error' });
+    message.value = `更新失败：${String(error)}`;
+    await showMessage(message.value, { title: 'AMDL', kind: 'error' });
   } finally {
+    await update?.close().catch(() => {});
     isCheckingUpdate.value = false;
   }
 }

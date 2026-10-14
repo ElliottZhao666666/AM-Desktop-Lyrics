@@ -1,0 +1,19 @@
+{
+  "name": "ybjun-update",
+  "main": "worker.js",
+  "compatibility_date": "2026-10-14",
+  "workers_dev": false,
+  "preview_urls": false,
+  "routes": [
+    { "pattern": "update.ybjun.com", "custom_domain": true }
+  ],
+  "d1_databases": [
+    {
+      "binding": "DB",
+      "database_name": "ybjun-software-update",
+      "database_id": "0d8d7064-c7ff-4fb2-92e2-d09c4409b249",
+      "migrations_dir": "migrations"
+    }
+  ],
+  "observability": { "enabled": true, "head_sampling_rate": 1 }
+}

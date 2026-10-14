@@ -49,7 +49,7 @@ import { listen, type UnlistenFn } from '@tauri-apps/api/event';
 import { getCurrentWindow } from '@tauri-apps/api/window';
 import { ask } from '@tauri-apps/plugin-dialog';
 import { relaunch } from '@tauri-apps/plugin-process';
-import { check } from '@tauri-apps/plugin-updater';
+import { check, type Update } from '@tauri-apps/plugin-updater';
 import ControlBar from './components/ControlBar.vue';
 import LyricsBoard from './components/LyricsBoard.vue';
 import SettingsView from './components/SettingsView.vue';
@@ -120,8 +120,9 @@ const resizeEdges: Array<{ direction: ResizeDirection; className: string }> = [
 ];
 
 async function checkForStartupUpdate() {
+  let update: Update | null = null;
   try {
-    const update = await check();
+    update = await check({ timeout: 15000 });
     if (!update) return;
     const releaseNotes = update.body?.trim() || '暂无更新日志';
     const confirmed = await ask(
@@ -133,6 +134,8 @@ async function checkForStartupUpdate() {
     await relaunch();
   } catch {
     // 启动检查静默失败，不显示错误弹窗。
+  } finally {
+    await update?.close().catch(() => {});
   }
 }
 
