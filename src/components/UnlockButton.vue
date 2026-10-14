@@ -1,6 +1,6 @@
 <template>
   <div class="unlock-surface">
-    <button class="unlock-button" title="解锁歌词窗口" aria-label="解锁歌词窗口" @click="unlock">
+    <button class="unlock-button" :class="{ 'is-visible': hovered }" title="解锁歌词窗口" aria-label="解锁歌词窗口" @click="unlock">
       <LockKeyhole :size="17" />
     </button>
   </div>
@@ -8,7 +8,25 @@
 
 <script setup lang="ts">
 import { invoke } from '@tauri-apps/api/core';
+import { listen, type UnlistenFn } from '@tauri-apps/api/event';
+import { onMounted, onUnmounted, ref } from 'vue';
 import { LockKeyhole } from '@lucide/vue';
+
+const hovered = ref(false);
+let unlistenHover: UnlistenFn | null = null;
+onMounted(async () => {
+  // 先监听再读取；期间到达的原生事件优先于首次查询返回值。
+  let eventReceived = false;
+  unlistenHover = await listen<boolean>('unlock-hover-changed', (event) => {
+    eventReceived = true;
+    hovered.value = event.payload;
+  });
+  try {
+    const initial = await invoke<boolean>('get_unlock_hover_state');
+    if (!eventReceived) hovered.value = initial;
+  } catch (error) { console.error('get unlock hover state failed:', error); }
+});
+onUnmounted(() => unlistenHover?.());
 
 async function unlock() {
   try {
@@ -44,8 +62,7 @@ async function unlock() {
   cursor: pointer;
   transition: opacity 120ms ease, color 120ms ease, transform 120ms ease;
 }
-.unlock-surface:hover .unlock-button,
-.unlock-button:focus-visible {
+.unlock-button.is-visible {
   opacity: 1;
 }
 .unlock-button:hover { color: #fb7185; }

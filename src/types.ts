@@ -88,6 +88,7 @@ export interface AppSettings {
   themeEditor?: ThemeEditor | null;
   lyricsTimeOffsetMs: number;
   rememberLyricsWindowBounds: boolean;
+  lyricsWindowAlwaysOnTop: boolean;
   lyricsWindowBounds: LyricsWindowBounds | null;
 }
 

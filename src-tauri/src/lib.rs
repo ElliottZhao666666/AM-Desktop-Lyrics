@@ -21,6 +21,7 @@ pub mod media;
 pub mod playback;
 pub mod settings_store;
 mod window_geometry;
+mod window_stack;
 
 use base64::Engine;
 use serde::{Deserialize, Serialize};
@@ -41,6 +42,11 @@ static LYRICS_OFFSET_INITIALIZED: Once = Once::new();
 struct WindowLockState {
     locked: AtomicBool,
     menu_item: CheckMenuItem<Wry>,
+    always_on_top: AtomicBool,
+    topmost_menu_item: CheckMenuItem<Wry>,
+    unlock_hovered: AtomicBool,
+    bounds_save_generation: Arc<AtomicU64>,
+    bounds_save_suspended: Arc<AtomicBool>,
 }
 
 const DEFAULT_THEME_NAME: &str = "AMDL 默认";
@@ -81,6 +87,8 @@ pub struct AppSettings {
     pub lyrics_time_offset_ms: i64,
     #[serde(default)]
     pub remember_lyrics_window_bounds: bool,
+    #[serde(default = "default_true")]
+    pub lyrics_window_always_on_top: bool,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub lyrics_window_bounds: Option<LyricsWindowBounds>,
 }
@@ -108,6 +116,7 @@ impl Default for AppSettings {
             theme_editor: None,
             lyrics_time_offset_ms: 0,
             remember_lyrics_window_bounds: false,
+            lyrics_window_always_on_top: true,
             lyrics_window_bounds: None,
         }
     }
@@ -193,6 +202,7 @@ fn save_settings(app: AppHandle, settings: AppSettings) -> Result<(), String> {
         (settings, conversion_changed)
     };
     drop(runtime_offset_guard);
+    apply_always_on_top(&app, settings.lyrics_window_always_on_top)?;
     lyrics::provider::apply_cache_settings(settings.local_cache_limit as usize, conversion_changed);
     if conversion_changed {
         lyrics::provider::refresh_current_lyrics(app.clone());
@@ -437,8 +447,15 @@ fn position_unlock_window(app: &AppHandle) -> Result<(), String> {
         .ok_or_else(|| "找不到解锁窗口".to_string())?;
     let main_position = main.outer_position().map_err(|error| error.to_string())?;
     let main_size = main.outer_size().map_err(|error| error.to_string())?;
-    let unlock_size = unlock.outer_size().map_err(|error| error.to_string())?;
-    let x = main_position.x + (main_size.width as i32 - unlock_size.width as i32) / 2;
+    let scale = main.scale_factor().map_err(|error| error.to_string())?;
+    let width = (44.0 * scale).round() as u32;
+    unlock
+        .set_size(tauri::PhysicalSize::new(
+            width,
+            (40.0 * scale).round() as u32,
+        ))
+        .map_err(|error| error.to_string())?;
+    let x = main_position.x + (main_size.width as i32 - width as i32) / 2;
     unlock
         .set_position(tauri::Position::Physical(tauri::PhysicalPosition::new(
             x,
@@ -455,22 +472,16 @@ fn apply_window_lock(
     let main = app
         .get_webview_window("main")
         .ok_or_else(|| "找不到歌词主窗口".to_string())?;
-    let unlock = app
-        .get_webview_window("unlock")
-        .ok_or_else(|| "找不到解锁窗口".to_string())?;
-
     if locked {
         position_unlock_window(app)?;
         main.set_ignore_cursor_events(true)
             .map_err(|error| format!("启用鼠标穿透失败: {error}"))?;
-        if let Err(error) = unlock.show() {
+        if let Err(error) = window_stack::sync(app) {
             let _ = main.set_ignore_cursor_events(false);
-            return Err(format!("显示解锁窗口失败: {error}"));
+            return Err(format!("同步解锁窗口层级失败: {error}"));
         }
     } else {
-        unlock
-            .hide()
-            .map_err(|error| format!("隐藏解锁窗口失败: {error}"))?;
+        window_stack::hide_unlock(app)?;
         main.set_ignore_cursor_events(false)
             .map_err(|error| format!("关闭鼠标穿透失败: {error}"))?;
     }
@@ -492,6 +503,107 @@ fn get_lock_state(state: State<'_, WindowLockState>) -> bool {
 }
 
 #[tauri::command]
+fn get_unlock_hover_state(app: AppHandle) -> bool {
+    app.try_state::<WindowLockState>()
+        .is_some_and(|state| state.unlock_hovered.load(Ordering::SeqCst))
+}
+
+#[cfg(test)]
+mod window_preferences_tests {
+    use super::*;
+
+    #[test]
+    fn legacy_settings_default_to_topmost_and_explicit_false_survives_roundtrip() {
+        let legacy: AppSettings = serde_json::from_value(serde_json::json!({
+            "lyricsTimeOffsetMs": -1500,
+            "rememberLyricsWindowBounds": true,
+            "lyricsWindowBounds": {"x": -1200, "y": 400, "width": 800, "height": 150}
+        }))
+        .unwrap();
+        assert!(legacy.lyrics_window_always_on_top);
+        let mut settings = legacy;
+        settings.lyrics_window_always_on_top = false;
+        let restored: AppSettings =
+            serde_json::from_value(serde_json::to_value(settings).unwrap()).unwrap();
+        assert!(!restored.lyrics_window_always_on_top);
+        assert!(restored.remember_lyrics_window_bounds);
+        assert_eq!(restored.lyrics_window_bounds.unwrap().x, -1200);
+        assert_eq!(restored.lyrics_time_offset_ms, -1500);
+    }
+}
+
+fn apply_always_on_top(app: &AppHandle, enabled: bool) -> Result<(), String> {
+    let state = app.state::<WindowLockState>();
+    let previous = state.always_on_top.swap(enabled, Ordering::SeqCst);
+    for label in ["main", "unlock"] {
+        app.get_webview_window(label)
+            .ok_or("找不到歌词浮窗")?
+            .set_always_on_top(enabled)
+            .map_err(|error| error.to_string())?;
+    }
+    if let Err(error) = window_stack::sync(app) {
+        state.always_on_top.store(previous, Ordering::SeqCst);
+        let _ = window_stack::sync(app);
+        return Err(error);
+    }
+    state
+        .topmost_menu_item
+        .set_checked(enabled)
+        .map_err(|error| error.to_string())?;
+    app.emit("lyrics-window-topmost-changed", enabled)
+        .map_err(|error| error.to_string())?;
+    Ok(())
+}
+
+fn set_always_on_top(app: &AppHandle, enabled: bool) -> Result<(), String> {
+    let previous = app
+        .state::<WindowLockState>()
+        .always_on_top
+        .load(Ordering::SeqCst);
+    apply_always_on_top(app, enabled)?;
+    let persisted = (|| {
+        let _guard = SETTINGS_IO_LOCK.lock().map_err(|_| "设置文件锁已损坏")?;
+        let mut settings = read_settings_unlocked()?;
+        settings.lyrics_window_always_on_top = enabled;
+        write_settings_unlocked(&settings)
+    })();
+    if let Err(error) = persisted {
+        let _ = apply_always_on_top(app, previous);
+        return Err(error);
+    }
+    println!("[AMDL][窗口] 保持歌词面板置顶: {enabled}");
+    Ok(())
+}
+
+fn reset_lyrics_window_bounds(app: &AppHandle) -> Result<(), String> {
+    let window = app.get_webview_window("main").ok_or("找不到歌词窗口")?;
+    let state = app.state::<WindowLockState>();
+    state.bounds_save_suspended.store(true, Ordering::SeqCst);
+    let generation = state.bounds_save_generation.fetch_add(1, Ordering::SeqCst) + 1;
+    let result: Result<(), String> = (|| {
+        let bounds = default_window_bounds(&window);
+        apply_window_bounds(&window, bounds)?;
+        // 跨 DPI 移动可能触发一次自动缩放，再按目标屏幕的物理尺寸校正。
+        apply_window_bounds(&window, bounds)?;
+        position_unlock_window(app)?;
+        let _guard = SETTINGS_IO_LOCK.lock().map_err(|_| "设置文件锁已损坏")?;
+        let mut settings = read_settings_unlocked()?;
+        settings.lyrics_window_bounds = Some(bounds);
+        write_settings_unlocked(&settings)?;
+        println!("[AMDL][窗口] 已重置到主显示器默认位置和大小: {bounds:?}");
+        Ok(())
+    })();
+    resume_window_bounds_saving(
+        state.bounds_save_suspended.clone(),
+        state.bounds_save_generation.clone(),
+        generation,
+    );
+    result?;
+    show_main_window(app);
+    Ok(())
+}
+
+#[tauri::command]
 fn set_window_locked(
     app: AppHandle,
     state: State<'_, WindowLockState>,
@@ -505,14 +617,9 @@ fn show_main_window(app: &AppHandle) {
         let _ = window.show();
         let _ = window.set_focus();
     }
-    if app
-        .try_state::<WindowLockState>()
-        .is_some_and(|state| state.locked.load(Ordering::SeqCst))
-    {
+    if app.try_state::<WindowLockState>().is_some() {
         let _ = position_unlock_window(app);
-        if let Some(window) = app.get_webview_window("unlock") {
-            let _ = window.show();
-        }
+        let _ = window_stack::sync(app);
     }
 }
 
@@ -554,14 +661,21 @@ fn normalize_window_bounds(
         .collect::<Vec<_>>();
     window_geometry::restore(bounds, &screens).unwrap_or_else(|| default_window_bounds(window))
 }
-fn apply_window_bounds(window: &tauri::WebviewWindow, bounds: LyricsWindowBounds) {
-    let _ = window.set_size(tauri::Size::Physical(tauri::PhysicalSize::new(
-        bounds.width,
-        bounds.height,
-    )));
-    let _ = window.set_position(tauri::Position::Physical(tauri::PhysicalPosition::new(
-        bounds.x, bounds.y,
-    )));
+fn apply_window_bounds(
+    window: &tauri::WebviewWindow,
+    bounds: LyricsWindowBounds,
+) -> Result<(), String> {
+    window
+        .set_position(tauri::Position::Physical(tauri::PhysicalPosition::new(
+            bounds.x, bounds.y,
+        )))
+        .map_err(|error| error.to_string())?;
+    window
+        .set_size(tauri::Size::Physical(tauri::PhysicalSize::new(
+            bounds.width,
+            bounds.height,
+        )))
+        .map_err(|error| error.to_string())
 }
 
 fn current_window_bounds(window: &tauri::WebviewWindow) -> Option<LyricsWindowBounds> {
@@ -620,10 +734,16 @@ fn schedule_window_bounds_save(
     let current_generation = generation.fetch_add(1, Ordering::SeqCst) + 1;
     let _ = sender.send((bounds, current_generation));
 }
-fn resume_window_bounds_saving(suspended: Arc<AtomicBool>) {
+fn resume_window_bounds_saving(
+    suspended: Arc<AtomicBool>,
+    generation: Arc<AtomicU64>,
+    expected: u64,
+) {
     std::thread::spawn(move || {
         std::thread::sleep(Duration::from_millis(500));
-        suspended.store(false, Ordering::SeqCst);
+        if generation.load(Ordering::SeqCst) == expected {
+            suspended.store(false, Ordering::SeqCst);
+        }
     });
 }
 
@@ -656,18 +776,40 @@ pub fn run() {
 
             let lock_item =
                 CheckMenuItem::with_id(app, "lock", "锁定窗口", true, false, None::<&str>)?;
+            let topmost_item = CheckMenuItem::with_id(
+                app,
+                "always-on-top",
+                "保持歌词面板置顶",
+                true,
+                initial_settings.lyrics_window_always_on_top,
+                None::<&str>,
+            )?;
             app.manage(WindowLockState {
                 locked: AtomicBool::new(false),
                 menu_item: lock_item.clone(),
+                always_on_top: AtomicBool::new(initial_settings.lyrics_window_always_on_top),
+                topmost_menu_item: topmost_item.clone(),
+                unlock_hovered: AtomicBool::new(false),
+                bounds_save_generation: bounds_save_generation.clone(),
+                bounds_save_suspended: bounds_save_suspended.clone(),
             });
             let show_main_interface_item =
                 MenuItem::with_id(app, "show-main-interface", "显示主界面", true, None::<&str>)?;
             let settings_item = MenuItem::with_id(app, "settings", "设置", true, None::<&str>)?;
+            let reset_position_item = MenuItem::with_id(
+                app,
+                "reset-window-bounds",
+                "重置歌词面板位置",
+                true,
+                None::<&str>,
+            )?;
             let quit_item = MenuItem::with_id(app, "quit", "退出 AMDL", true, None::<&str>)?;
             let menu = Menu::with_items(
                 app,
                 &[
                     &lock_item,
+                    &topmost_item,
+                    &reset_position_item,
                     &show_main_interface_item,
                     &settings_item,
                     &PredefinedMenuItem::separator(app)?,
@@ -710,6 +852,21 @@ pub fn run() {
                     println!("[AMDL][托盘] 显示主界面");
                     show_main_window(&menu_app);
                 }
+                "always-on-top" => {
+                    let state = menu_app.state::<WindowLockState>();
+                    let checked = state.topmost_menu_item.is_checked().unwrap_or(true);
+                    if let Err(error) = set_always_on_top(&menu_app, checked) {
+                        let _ = state
+                            .topmost_menu_item
+                            .set_checked(state.always_on_top.load(Ordering::SeqCst));
+                        eprintln!("[AMDL][托盘] 切换置顶失败: {error}");
+                    }
+                }
+                "reset-window-bounds" => {
+                    if let Err(error) = reset_lyrics_window_bounds(&menu_app) {
+                        eprintln!("[AMDL][托盘] 重置歌词面板位置失败: {error}");
+                    }
+                }
                 "settings" => {
                     println!("[AMDL][托盘] 打开设置");
                     if let Err(error) = open_settings(menu_app.clone()) {
@@ -731,7 +888,7 @@ pub fn run() {
                     None
                 }
                 .unwrap_or_else(|| default_window_bounds(&window));
-                apply_window_bounds(&window, normalize_window_bounds(&window, initial_bounds));
+                apply_window_bounds(&window, normalize_window_bounds(&window, initial_bounds))?;
 
                 let bounded_window = window.clone();
                 let event_save_suspended = bounds_save_suspended.clone();
@@ -741,11 +898,7 @@ pub fn run() {
                         if !EXIT_REQUESTED.load(Ordering::SeqCst) {
                             api.prevent_close();
                             let _ = bounded_window.hide();
-                            if let Some(unlock) =
-                                bounded_window.app_handle().get_webview_window("unlock")
-                            {
-                                let _ = unlock.hide();
-                            }
+                            let _ = window_stack::hide_unlock(bounded_window.app_handle());
                         }
                         return;
                     }
@@ -780,7 +933,7 @@ pub fn run() {
                     let x = recovered.x;
                     let y = recovered.y;
                     if x != position.x || y != position.y {
-                        apply_window_bounds(&bounded_window, recovered);
+                        let _ = apply_window_bounds(&bounded_window, recovered);
                         return;
                     }
                     let _ = position_unlock_window(bounded_window.app_handle());
@@ -797,7 +950,11 @@ pub fn run() {
                         );
                     }
                 });
-                resume_window_bounds_saving(bounds_save_suspended.clone());
+                resume_window_bounds_saving(
+                    bounds_save_suspended.clone(),
+                    bounds_save_generation.clone(),
+                    0,
+                );
             }
             if let Some(window) = app.get_webview_window("settings") {
                 keep_settings_window_reusable(&window);
@@ -805,6 +962,7 @@ pub fn run() {
             if let Some(window) = app.get_webview_window("unlock") {
                 let _ = window.hide();
             }
+            window_stack::initialize(app.handle())?;
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
@@ -824,6 +982,7 @@ pub fn run() {
             open_settings,
             get_system_fonts,
             get_lock_state,
+            get_unlock_hover_state,
             set_window_locked,
             logger::read_current_log,
             logger::open_log_dir,

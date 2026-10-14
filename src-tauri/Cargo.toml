@@ -35,6 +35,8 @@ windows = { version = "0.61", features = [
     "Foundation_Collections",
     "Storage_Streams",
     "Win32_System_WinRT",
+    "Win32_Foundation",
+    "Win32_UI_WindowsAndMessaging",
 ] }
 tokio = { version = "1", features = ["rt", "time", "sync"] }
 tauri-plugin-dialog = "2.7.2"

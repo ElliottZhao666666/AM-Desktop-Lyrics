@@ -14,7 +14,8 @@
 
       <div v-if="activeSection === 'general'" class="settings-list">
         <div class="setting-row"><div><strong>歌词时间偏移 (ms)</strong><p>调整后即时生效；点击“应用”后写入配置，并在下次运行时读取。</p></div><input :value="lyricsOffsetInput" class="offset-input" type="text" inputmode="numeric" @input="updateLyricsOffsetInput" /></div>
-        <div class="setting-row"><div><strong>自动转换繁体歌词到简体</strong><p>Apple Music 缓存命中时自动转换华语歌词。</p></div><button class="switch" :class="{ on: settings.autoConvertTraditionalToSimplified }" role="switch" :aria-checked="settings.autoConvertTraditionalToSimplified" @click="settings.autoConvertTraditionalToSimplified = !settings.autoConvertTraditionalToSimplified"><span /></button></div>
+        <div class="setting-row"><div><strong>自动转换繁体歌词到简体</strong><p>显示歌词时自动转换为简体。</p></div><button class="switch" :class="{ on: settings.autoConvertTraditionalToSimplified }" role="switch" :aria-checked="settings.autoConvertTraditionalToSimplified" @click="settings.autoConvertTraditionalToSimplified = !settings.autoConvertTraditionalToSimplified"><span /></button></div>
+        <div class="setting-row"><div><strong>保持歌词面板置顶</strong><p>让歌词面板保持在最前，锁定时解锁按钮显示在歌词上方。</p></div><button class="switch" :class="{ on: settings.lyricsWindowAlwaysOnTop }" role="switch" aria-label="保持歌词面板置顶" :aria-checked="settings.lyricsWindowAlwaysOnTop" @click="settings.lyricsWindowAlwaysOnTop = !settings.lyricsWindowAlwaysOnTop"><span /></button></div>
         <div class="setting-row"><div><strong>记忆歌词窗口位置和大小</strong><p>保存拖动和缩放后的歌词窗口状态。</p></div><button class="switch" :class="{ on: settings.rememberLyricsWindowBounds }" role="switch" :aria-checked="settings.rememberLyricsWindowBounds" @click="settings.rememberLyricsWindowBounds = !settings.rememberLyricsWindowBounds"><span /></button></div>
         <div class="setting-row"><div><strong>歌词缓存歌曲数</strong><p>保存最近播放的歌词，重复播放时优先读取。</p></div><input v-model.number="settings.localCacheLimit" class="number-input" type="number" min="1" max="50" step="1" /></div>
       </div>
@@ -206,6 +207,7 @@ const settings = ref<AppSettings>({
   themeCss: DEFAULT_THEME_CSS,
   lyricsTimeOffsetMs: 0,
   rememberLyricsWindowBounds: false,
+  lyricsWindowAlwaysOnTop: true,
   lyricsWindowBounds: null,
 });
 const editor = ref<ThemeEditor>(cloneEditor(DEFAULT_EDITOR));
@@ -239,6 +241,8 @@ let unlistenLyricsTimeOffset: UnlistenFn | null = null;
 let unlistenMediaState: UnlistenFn | null = null;
 let unlistenOpened: UnlistenFn | null = null;
 let unlistenClosed: UnlistenFn | null = null;
+let unlistenTopmost: UnlistenFn | null = null;
+let topmostEventVersion = 0;
 let windowLifecycle = Promise.resolve();
 let mediaStateRevision = -1;
 let lyricsTimeOffsetRevision = -1;
@@ -263,6 +267,11 @@ function applyLyricsTimeOffset(payload: RuntimeLyricsTimeOffset) {
 
 onMounted(async () => {
   try {
+    unlistenTopmost = await listen<boolean>('lyrics-window-topmost-changed', (event) => {
+      topmostEventVersion++;
+      settings.value.lyricsWindowAlwaysOnTop = event.payload;
+      if (savedSettings) savedSettings.lyricsWindowAlwaysOnTop = event.payload;
+    });
     unlistenLyricsTimeOffset = await listen<RuntimeLyricsTimeOffset>('lyrics-time-offset-changed', (event) => {
       applyLyricsTimeOffset(event.payload);
     });
@@ -274,6 +283,7 @@ onMounted(async () => {
 });
 
 async function reloadSettings() {
+    const initialTopmostVersion = topmostEventVersion;
     const [loadedSettings, loadedConfig, runtimeOffset, fonts, mediaSnapshot] = await Promise.allSettled([
       invoke<AppSettings>('get_settings'),
       invoke<AppConfig>('get_config'),
@@ -282,7 +292,9 @@ async function reloadSettings() {
       invoke<MediaSnapshotPayload>('get_media_snapshot'),
     ]);
     if (loadedSettings.status === 'fulfilled') {
+      const latestTopmost = settings.value.lyricsWindowAlwaysOnTop;
       settings.value = loadedSettings.value;
+      if (topmostEventVersion !== initialTopmostVersion) settings.value.lyricsWindowAlwaysOnTop = latestTopmost;
       lyricsOffsetInput.value = String(loadedSettings.value.lyricsTimeOffsetMs);
     } else message.value = String(loadedSettings.reason);
     if (loadedConfig.status === 'fulfilled') config.value = loadedConfig.value;
@@ -296,7 +308,7 @@ async function reloadSettings() {
     savedConfig = JSON.parse(JSON.stringify(config.value));
 }
 
-onUnmounted(() => { unlistenLyricsTimeOffset?.(); unlistenMediaState?.(); unlistenOpened?.(); unlistenClosed?.(); });
+onUnmounted(() => { unlistenLyricsTimeOffset?.(); unlistenMediaState?.(); unlistenOpened?.(); unlistenClosed?.(); unlistenTopmost?.(); });
 
 function applyMediaState(payload: MediaStatePayload) {
   if (payload.revision < mediaStateRevision) return;

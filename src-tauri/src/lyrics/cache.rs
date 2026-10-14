@@ -20,6 +20,7 @@ pub async fn fetch_lyrics(
     config: &AppConfig,
 ) -> Result<Option<VerifiedCache>, String> {
     let Some(root) = cache_scanner::cache_root() else {
+        println!("[歌词][Apple 缓存] 未找到 Apple Music 缓存目录");
         return Ok(None);
     };
     let mut seen_ids = std::collections::BTreeSet::new();
@@ -72,6 +73,10 @@ pub async fn fetch_lyrics(
             tokio::time::sleep(Duration::from_millis(240)).await;
         }
     }
+    println!(
+        "[歌词][Apple 缓存] 扫描完成，核验 {} 个候选 ID，未找到当前歌曲的可信歌词",
+        seen_ids.len()
+    );
     Ok(None)
 }
 

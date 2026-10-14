@@ -56,7 +56,8 @@
         "minimizable": false,
         "maximizable": false,
         "closable": false,
-        "focus": false
+        "focus": false,
+        "focusable": false
       }
     ],
     "security": {

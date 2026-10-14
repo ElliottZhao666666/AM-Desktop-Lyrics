@@ -112,11 +112,21 @@ fn start_fetch(
     let Some(token) = begin_request(&track, track_revision, duration_ms, force) else {
         return;
     };
+    println!(
+        "[歌词][请求{}] 开始匹配: track={track:?}, duration={duration_ms}ms, 强制刷新={force}",
+        token.generation
+    );
     publish_status(&app, &track, LyricsLoadState::Loading, None, token);
     let task = tauri::async_runtime::spawn(async move {
         let result = tokio::time::timeout(
             Duration::from_secs(90),
-            fetch_document(&track, duration_ms, SystemTime::now(), !force),
+            fetch_document(
+                &track,
+                duration_ms,
+                SystemTime::now(),
+                !force,
+                token.generation,
+            ),
         )
         .await
         .unwrap_or_else(|_| Err("歌词获取超时，请检查网络或手动重试".into()));
@@ -148,11 +158,15 @@ async fn fetch_document(
     duration_ms: u64,
     requested_at: SystemTime,
     use_automatic_cache: bool,
+    request_id: u64,
 ) -> Result<Option<LyricsDocument>, String> {
     let config = crate::config::read_config()?.normalize();
     if config.source_enabled("manual") {
         match custom_pool::get(track) {
-            Ok(Some(document)) => return Ok(Some(document)),
+            Ok(Some(document)) => {
+                println!("[歌词][请求{request_id}] 命中永久手动匹配，使用自选歌词池");
+                return Ok(Some(document));
+            }
             Ok(None) => {}
             Err(error) => eprintln!("[CustomLyrics] 读取失败，继续自动匹配: {error}"),
         }
@@ -160,6 +174,10 @@ async fn fetch_document(
     if let Some(document) = local_cache_get(track, &config, duration_ms) {
         // 保存渠道/Token 后重新按优先级获取；手动选择仍作为用户明确的覆盖结果。
         if use_automatic_cache || document.source == crate::domain::LyricsSource::Manual {
+            println!(
+                "[歌词][请求{request_id}] 命中 AMDL 自身缓存，原始来源={}",
+                source_name(&document.source)
+            );
             return Ok(Some(document));
         }
     }
@@ -178,6 +196,7 @@ async fn fetch_document(
     let mut verified_cache: Option<Option<cache::VerifiedCache>> = None;
     let mut errors = Vec::new();
     for source in channels {
+        println!("[歌词][请求{request_id}] 尝试渠道: {}", source.name);
         let result = match source.id.as_str() {
             "appleMusicApi" | "appleMusicCache" => {
                 if verified_cache.is_none() {
@@ -185,6 +204,7 @@ async fn fetch_document(
                         match cache::fetch_lyrics(track, requested_at, duration_ms, &config).await {
                             Ok(candidate) => candidate,
                             Err(error) => {
+                                eprintln!("[歌词][请求{request_id}] Apple 缓存身份核验失败，跳过依赖此 ID 的渠道: {}", brief_error(&error));
                                 errors.push(error);
                                 None
                             }
@@ -206,9 +226,16 @@ async fn fetch_document(
         };
         match result {
             Ok(Some(document)) => return Ok(Some(document)),
-            Ok(None) => {}
+            Ok(None) => println!(
+                "[歌词][请求{request_id}] {} 未取得可信歌词，继续下一渠道",
+                source.name
+            ),
             Err(error) => {
-                eprintln!("[Lyrics] {error}");
+                eprintln!(
+                    "[歌词][请求{request_id}] {} 获取失败，继续下一渠道: {}",
+                    source.name,
+                    brief_error(&error)
+                );
                 errors.push(error);
             }
         }
@@ -225,6 +252,10 @@ async fn fetch_apple_music_api(
     candidate: &cache::VerifiedCache,
     config: &crate::config::AppConfig,
 ) -> Result<Option<LyricsDocument>, String> {
+    println!(
+        "[歌词][Apple Music API] 使用已核验歌曲 id={} 请求逐字歌词",
+        candidate.track_id
+    );
     let body = crate::lyrics::am_api::fetch_syllable_lyrics(
         &candidate.track_id,
         config.auto_chs,
@@ -255,6 +286,26 @@ async fn fetch_apple_music_api(
     }
     document.duration_ms = candidate.document.duration_ms.or(document.duration_ms);
     Ok(Some(document))
+}
+
+fn source_name(source: &crate::domain::LyricsSource) -> &'static str {
+    use crate::domain::LyricsSource::*;
+    match source {
+        AppleMusicApi => "Apple Music 官方逐字歌词",
+        AppleMusicCache => "Apple Music 本地缓存",
+        QqMusic => "QQ 音乐",
+        Manual => "手动匹配",
+        AmllDb => "AMLL 歌词库",
+        Dummy => "测试歌词",
+    }
+}
+
+fn brief_error(error: &str) -> String {
+    let mut text: String = error.chars().take(180).collect();
+    if error.chars().count() > 180 {
+        text.push('…');
+    }
+    text.replace(['\r', '\n'], " ")
 }
 
 fn extract_ttml(body: &str) -> Option<String> {
@@ -288,6 +339,15 @@ fn publish_status(
     }
     if matches!(status, LyricsLoadState::NotFound | LyricsLoadState::Error) {
         state.retry_at = Some(Instant::now() + Duration::from_secs(15));
+    }
+    let terminal = matches!(status, LyricsLoadState::NotFound | LyricsLoadState::Error);
+    if terminal {
+        println!(
+            "[歌词][请求{}] 匹配结束: {:?}，{}",
+            token.generation,
+            status,
+            message.as_deref().map(brief_error).unwrap_or_default()
+        );
     }
     crate::playback::update_lyrics(
         app,
@@ -325,6 +385,18 @@ fn finish_loaded(app: &AppHandle, document: &LyricsDocument, token: RequestToken
         Some(displayed),
     ) {
         state.retry_at = None;
+        println!(
+            "[歌词][请求{}] 已采用来源={}，{} 行，时间轴={}，track={:?}",
+            token.generation,
+            source_name(&document.source),
+            document.lines.len(),
+            if document.lines.iter().any(|line| !line.words.is_empty()) {
+                "逐字"
+            } else {
+                "逐行"
+            },
+            document.track
+        );
         local_cache_put(document);
         true
     } else {
@@ -348,6 +420,10 @@ fn begin_forced_request(
         true,
     )
     .ok_or("歌词请求锁已损坏")?;
+    println!(
+        "[歌词][请求{}] 开始手动获取: track={track:?}",
+        token.generation
+    );
     publish_status(app, track, LyricsLoadState::Loading, None, token);
     Ok((token, snapshot.position.duration_ms))
 }
