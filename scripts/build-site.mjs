@@ -11,7 +11,7 @@ const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const docs = path.join(root, 'docs');
 const checkOnly = process.argv.includes('--check');
 const templates = Object.fromEntries(await Promise.all(['head', 'header', 'footer'].map(async name => [
-    name, (await fs.readFile(path.join(root, 'site/partials', `${name}.html`), 'utf8')).trim(),
+    name, (await fs.readFile(path.join(root, 'site/partials', `${name}.html`), 'utf8')).replace(/\r\n?/g, '\n').trim(),
 ])));
 
 async function* pages(directory) {
