@@ -10,7 +10,7 @@
       <template v-else-if="displayLines.length">
         <template v-for="line in displayLines" :key="`${line.begin_ms}-${line.text}`">
           <KaraokeLine v-if="line.words?.length" :line="line" :position-ms="positionMs" />
-          <div v-else class="amdl-lyric-line" :class="{ 'is-active': isLineActive(line) }">{{ line.text }}</div>
+          <div v-else class="amdl-lyric-line is-active">{{ line.text }}</div>
         </template>
       </template>
     </div>
@@ -35,7 +35,7 @@ const props = defineProps<{
   lyricsMessage: string | null;
 }>();
 
-/** 计算当前应该高亮显示的歌词 */
+/** 计算当前显示的歌词；逐行歌词在整个显示期间保持高亮。 */
 const INTERLUDE_GAP_MS = 8_000;
 
 const timeline = computed(() => {
@@ -81,33 +81,28 @@ const currentLines = computed(() => {
 const displayLines = computed(() => {
   if (currentLines.value.length) return currentLines.value;
   if (activeLineIndex.value < 0 || !props.lyrics) return [];
-  if (activeLineIndex.value === props.lyrics.lines.length - 1) return [];
+  // 短句间隙及尾奏保留上一句，逐字歌词的进度会自然停在全部高亮。
   return [props.lyrics.lines[activeLineIndex.value]];
 });
 
-const displayMode = computed<'status' | 'intro' | 'interlude' | 'outro' | 'line'>(() => {
+const displayMode = computed<'status' | 'intro' | 'interlude' | 'line'>(() => {
   if (props.lyricsState !== 'loaded' || !props.lyrics?.lines.length) return 'status';
   if (activeLineIndex.value < 0) return 'intro';
   if (currentLines.value.length) return 'line';
   const entry = timeline.value[activeLineIndex.value];
   const next = props.lyrics.lines[activeLineIndex.value + 1];
-  if (!next) return 'outro';
-  if (next.begin_ms - entry.end >= INTERLUDE_GAP_MS) return 'interlude';
+  if (next && next.begin_ms - entry.end >= INTERLUDE_GAP_MS) return 'interlude';
   return 'line';
 });
 
 const displayText = computed(() => {
   if (props.title === '等待播放...' || (!props.title.trim() && !props.artist.trim())) return '等待播放...';
-  if (displayMode.value === 'intro' || displayMode.value === 'outro') return [props.title, props.artist].filter(Boolean).join(' - ');
+  if (displayMode.value === 'intro') return [props.title, props.artist].filter(Boolean).join(' - ');
   if (displayMode.value === 'interlude') return '● ● ●';
   if (props.lyricsState === 'loading') return '正在搜索歌词...';
   if (props.lyricsState === 'notFound') return '暂无匹配歌词';
   if (props.lyricsState === 'error') return props.lyricsMessage || '歌词加载失败';
   return '';
 });
-
-function isLineActive(line: { begin_ms: number; end_ms: number | null }) {
-  return currentLines.value.some((active) => active === line);
-}
 
 </script>
