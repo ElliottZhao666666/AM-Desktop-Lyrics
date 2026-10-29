@@ -33,8 +33,11 @@ for (const relative of included.filter(file => file.endsWith('.html'))) {
     const html = await fs.readFile(path.join(output, relative), 'utf8');
     for (const [, value] of html.matchAll(/(?:src|href)="([^"]+)"/g)) {
         if (/^(?:https?:|mailto:|#|data:)/i.test(value)) continue;
-        const target = path.resolve(path.dirname(path.join(output, relative)), decodeURIComponent(value.split(/[?#]/, 1)[0]));
-        if (!target.startsWith(output + path.sep)) throw Error(`${relative}: 站内链接越过部署目录 ${value}`);
+        const linkPath = decodeURIComponent(value.split(/[?#]/, 1)[0]);
+        const target = linkPath.startsWith('/')
+            ? path.resolve(output, `.${linkPath}`)
+            : path.resolve(path.dirname(path.join(output, relative)), linkPath);
+        if (target !== output && !target.startsWith(output + path.sep)) throw Error(`${relative}: 站内链接越过部署目录 ${value}`);
         try { await fs.access(target); } catch { throw Error(`${relative}: 站内链接目标不存在 ${value}`); }
     }
 }
