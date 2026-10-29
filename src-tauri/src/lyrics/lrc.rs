@@ -29,6 +29,8 @@ pub fn parse_lrc(value: &str, duration_ms: Option<u64>) -> Vec<LyricLine> {
             // LRC offset 的正值提前、负值延后，与 AMDL 自身的运行时偏移分开处理。
             let begin = (time as i128 - offset as i128).clamp(0, u64::MAX as i128) as u64;
             lines.push(LyricLine {
+                translations: Vec::new(),
+                pronunciations: Vec::new(),
                 begin_ms: begin,
                 end_ms: None,
                 words: Vec::new(),

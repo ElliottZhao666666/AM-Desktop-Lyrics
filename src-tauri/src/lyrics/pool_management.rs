@@ -1,5 +1,7 @@
 use super::{am_api, custom_pool, lrc, provider, ttml};
-use crate::domain::{LyricsDocument, LyricsSource, LyricsStorage, LyricsTiming, TrackIdentity};
+use crate::domain::{
+    LocalizedLyricText, LyricsDocument, LyricsSource, LyricsStorage, LyricsTiming, TrackIdentity,
+};
 use serde::{Deserialize, Serialize};
 use std::sync::atomic::{AtomicU64, Ordering};
 use tauri::{AppHandle, Emitter, Manager, WebviewUrl, WebviewWindowBuilder};
@@ -21,6 +23,8 @@ pub struct PoolEntry {
     track: TrackIdentity,
     apple_music_id: Option<String>,
     timing: LyricsTiming,
+    has_translation: bool,
+    has_pronunciation: bool,
 }
 
 #[derive(Debug, Serialize)]
@@ -83,6 +87,16 @@ fn summary(id: String, document: &LyricsDocument) -> PoolEntry {
         revision: revision(document),
         track: document.track.clone(),
         timing: timing(document),
+        has_translation: document.lines.iter().any(|line| {
+            line.translations
+                .iter()
+                .any(|text| !text.text.trim().is_empty())
+        }),
+        has_pronunciation: document.lines.iter().any(|line| {
+            line.pronunciations
+                .iter()
+                .any(|text| !text.text.trim().is_empty())
+        }),
         apple_music_id: document.storage.apple_music_id.clone().or_else(|| {
             am_api::cached_song(&document.track, document.duration_ms.unwrap_or(0))
                 .map(|song| song.id)
@@ -130,22 +144,102 @@ fn xml_text(text: &str) -> String {
         .replace('\'', "&apos;")
 }
 
-/// 旧池只有解析结果，重建标准可编辑文本，保留逐字时间、重叠行和句间清屏边界。
+fn append_localization_text(output: &mut String, text: &LocalizedLyricText) {
+    if text.words.is_empty() {
+        output.push_str(&xml_text(&text.text));
+    } else {
+        for word in &text.words {
+            output.push_str(&format!(
+                "<span xmlns=\"http://www.w3.org/ns/ttml\" begin=\"{}ms\" end=\"{}ms\">{}</span>",
+                word.begin_ms,
+                word.end_ms,
+                xml_text(&word.text),
+            ));
+        }
+    }
+}
+
+fn append_localizations(output: &mut String, doc: &LyricsDocument, pronunciation: bool) {
+    fn items(line: &crate::domain::LyricLine, pronunciation: bool) -> &[LocalizedLyricText] {
+        if pronunciation {
+            &line.pronunciations
+        } else {
+            &line.translations
+        }
+    }
+    let languages: std::collections::BTreeSet<_> = doc
+        .lines
+        .iter()
+        .flat_map(|line| {
+            items(line, pronunciation)
+                .iter()
+                .map(|entry| entry.language.as_str())
+        })
+        .collect();
+    if languages.is_empty() {
+        return;
+    }
+    let (container, element) = if pronunciation {
+        ("transliterations", "transliteration")
+    } else {
+        ("translations", "translation")
+    };
+    output.push_str(&format!("        <{container}>\n"));
+    for language in languages {
+        let kind = if pronunciation {
+            ""
+        } else {
+            " type=\"subtitle\""
+        };
+        output.push_str(&format!(
+            "          <{element}{kind} xml:lang=\"{}\">\n",
+            xml_text(language)
+        ));
+        for (index, line) in doc.lines.iter().enumerate() {
+            if let Some(entry) = items(line, pronunciation)
+                .iter()
+                .find(|entry| entry.language == language)
+            {
+                output.push_str(&format!(
+                    "            <text for=\"L{}\" xml:space=\"preserve\">",
+                    index + 1
+                ));
+                append_localization_text(output, entry);
+                output.push_str("</text>\n");
+            }
+        }
+        output.push_str(&format!("          </{element}>\n"));
+    }
+    output.push_str(&format!("        </{container}>\n"));
+}
+
+/// 重建可编辑 TTML，同时保留逐字时间、重叠行、句间边界和所有语言的辅助文本。
 fn editable_text(doc: &LyricsDocument) -> String {
     let duration = doc
         .duration_ms
         .map(|time| format!(" dur=\"{time}ms\""))
         .unwrap_or_default();
-    let mut text =
-        format!("<tt xmlns=\"http://www.w3.org/ns/ttml\">\n  <body{duration}>\n    <div>\n");
-    for line in &doc.lines {
+    let mut text = "<tt xmlns=\"http://www.w3.org/ns/ttml\" xmlns:itunes=\"http://music.apple.com/lyric-ttml-internal\">\n".to_string();
+    if doc
+        .lines
+        .iter()
+        .any(|line| !line.translations.is_empty() || !line.pronunciations.is_empty())
+    {
+        text.push_str("  <head>\n    <metadata>\n      <iTunesMetadata xmlns=\"http://music.apple.com/lyric-ttml-internal\">\n");
+        append_localizations(&mut text, doc, false);
+        append_localizations(&mut text, doc, true);
+        text.push_str("      </iTunesMetadata>\n    </metadata>\n  </head>\n");
+    }
+    text.push_str(&format!("  <body{duration}>\n    <div>\n"));
+    for (index, line) in doc.lines.iter().enumerate() {
         let end = line
             .end_ms
             .map(|time| format!(" end=\"{time}ms\""))
             .unwrap_or_default();
         text.push_str(&format!(
-            "      <p begin=\"{}ms\"{end} xml:space=\"preserve\">",
-            line.begin_ms
+            "      <p begin=\"{}ms\"{end} itunes:key=\"L{}\" xml:space=\"preserve\">",
+            line.begin_ms,
+            index + 1,
         ));
         if line.words.is_empty() {
             text.push_str(&xml_text(&line.text));
@@ -245,6 +339,7 @@ fn parse_text(
             storage: LyricsStorage {
                 apple_music_id: None,
                 timing: Some(LyricsTiming::Line),
+                localization_version: 1,
             },
         }
     };
@@ -482,6 +577,39 @@ fn ensure_editable(pool: PoolKind) -> Result<(), String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn editing_and_serialization_preserve_all_localizations_and_timed_pronunciation() {
+        let xml = r#"<tt xmlns:itunes="urn:i"><head><metadata>
+          <translation type="subtitle" xml:lang="zh-Hans"><text for="A">你好 &amp; 再见</text><text for="B">和声</text></translation>
+          <translation type="subtitle" xml:lang="en"><text for="A">Hello &amp; bye</text></translation>
+          <transliteration xml:lang="zh-Latn-pinyin"><text for="A"><span begin="1s" end="2s">nǐ </span><span begin="2s" end="4s">hǎo</span></text><text for="B">hé shēng</text></transliteration>
+        </metadata></head><body dur="8s"><p itunes:key="A" begin="1s" end="4s"><span begin="1s" end="2s">你</span><span begin="2s" end="4s">好</span></p><p itunes:key="B" begin="2s" end="5s">(和声)</p><p begin="6s" end="7s">end</p></body></tt>"#;
+        let mut doc = parse_text(TrackIdentity::default(), xml, None).unwrap();
+        doc.storage.apple_music_id = Some("123".into());
+        let stored = serde_json::to_vec(&doc).unwrap();
+        let loaded: LyricsDocument = serde_json::from_slice(&stored).unwrap();
+        assert_eq!(loaded, doc);
+        let edited = editable_text(&loaded);
+        let reparsed = parse_text(loaded.track.clone(), &edited, None).unwrap();
+        assert_eq!(reparsed.lines, loaded.lines);
+        assert_eq!(reparsed.duration_ms, loaded.duration_ms);
+        let entry = summary("test".into(), &reparsed);
+        assert_eq!(entry.timing, LyricsTiming::Word);
+        assert!(entry.has_translation && entry.has_pronunciation);
+        let json = serde_json::to_value(entry).unwrap();
+        assert_eq!(json["hasTranslation"], true);
+        assert_eq!(json["hasPronunciation"], true);
+        let old = parse_text(TrackIdentity::default(), "[00:01]old", None).unwrap();
+        let entry = summary("old".into(), &old);
+        assert!(!entry.has_translation && !entry.has_pronunciation);
+        assert_eq!(
+            parse_text(old.track.clone(), &editable_text(&old), None)
+                .unwrap()
+                .lines,
+            old.lines
+        );
+    }
     #[test]
     #[ignore = "只读兼容性检查：需要 AMDL_POOL_COMPAT_FILE 指定真实缓存副本或原文件"]
     fn existing_pool_reconstruction_readonly() {

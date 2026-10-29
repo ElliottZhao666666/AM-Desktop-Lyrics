@@ -1,0 +1,3 @@
+ALTER TABLE releases ADD COLUMN size_bytes INTEGER;
+ALTER TABLE releases ADD COLUMN sha256 TEXT;
+ALTER TABLE releases ADD COLUMN release_url TEXT;

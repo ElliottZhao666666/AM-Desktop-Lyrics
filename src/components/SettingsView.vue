@@ -18,6 +18,8 @@
         <div class="setting-row"><div><strong>保持歌词面板置顶</strong><p>让歌词面板保持在最前，锁定时解锁按钮显示在歌词上方。</p></div><button class="switch" :class="{ on: settings.lyricsWindowAlwaysOnTop }" role="switch" aria-label="保持歌词面板置顶" :aria-checked="settings.lyricsWindowAlwaysOnTop" @click="settings.lyricsWindowAlwaysOnTop = !settings.lyricsWindowAlwaysOnTop"><span /></button></div>
         <div class="setting-row"><div><strong>记忆歌词面板位置和大小</strong><p>保存拖动和缩放后的歌词面板状态。</p></div><button class="switch" :class="{ on: settings.rememberLyricsWindowBounds }" role="switch" :aria-checked="settings.rememberLyricsWindowBounds" @click="settings.rememberLyricsWindowBounds = !settings.rememberLyricsWindowBounds"><span /></button></div>
         <div class="setting-row"><div><strong>缓存池歌曲数</strong><p>保存最近使用的歌词；减少数量并应用后，会立即移除超出数量的旧缓存。</p></div><input v-model.number="settings.localCacheLimit" class="number-input" type="number" min="1" max="50" step="1" /></div>
+        <div class="setting-row"><div><strong>获取失败时最大重试次数</strong><p>首次获取失败后，最多自动重试指定次数；0 表示不自动重试。手动重新获取可重新开始。</p></div><select v-model.number="settings.lyricsMaxRetries" class="number-input" aria-label="获取失败时最大重试次数"><option v-for="count in [0, 1, 2, 3, 4, 5]" :key="count" :value="count">{{ count }}</option></select></div>
+        <div class="setting-row"><div><strong>当有歌词翻译/注音时</strong><p>启动后使用此偏好；手动开关在本次运行中持续生效。</p></div><select v-model="settings.lyricsAuxiliaryPreference" class="preference-select" aria-label="当有歌词翻译/注音时"><option value="off">默认都不打开</option><option value="translation">默认打开，且优先打开翻译</option><option value="pronunciation">默认打开，且优先打开注音</option></select></div>
       </div>
 
       <div v-else-if="activeSection === 'appearance'" class="appearance-workspace">
@@ -135,7 +137,9 @@
           </div>
         </div>
         <div v-if="tokensExpanded" class="token-panel">
-          <label>Authorization Token<input v-model="config.amApiTokens.authToken" type="password" autocomplete="off" /></label>
+          <label>Authorization Token<input v-model="config.amApiTokens.authToken" type="password" autocomplete="off" @input="tokenExpiryMessage = ''" /></label>
+          <div class="token-expiry-row"><button class="text-command" :disabled="tokenExpiryChecking || !config.amApiTokens.authToken.trim()" @click="inspectDeveloperToken">{{ tokenExpiryChecking ? '检测中…' : '检测有效期' }}</button><span class="token-expiry-result" :class="{ error: tokenExpiryError }" role="status">{{ tokenExpiryMessage }}</span></div>
+          <p v-if="tokenExpiryMessage">读取 Token 声明的到期时间；实际可用性以 Apple Music 接口响应为准。</p>
           <label>Media User Token<input v-model="config.amApiTokens.mediaUserToken" type="password" autocomplete="off" /></label>
           <button class="text-command" @click="openExternal('https://amdl.ybjun.com/help/get-token')">Token 获取教程</button>
           <p>Token 仅保存在本机配置中，点击底部“保存并生效”后才会写入。</p>
@@ -192,7 +196,7 @@ import { openUrl } from '@tauri-apps/plugin-opener';
 import { relaunch } from '@tauri-apps/plugin-process';
 import { check, type Update } from '@tauri-apps/plugin-updater';
 import { Check, CloudDownload, Database, FileText, FolderOpen, Info, Palette, RefreshCw, Save, Search, Settings2, Globe, GitBranch } from '@lucide/vue';
-import type { AppConfig, AppSettings, LyricsRefetchSource, MediaSnapshotPayload, MediaStatePayload, QqLyricsPreview, QqSongCandidate, RuntimeLyricsTimeOffset, ThemeFile, TrackIdentity } from '../types';
+import type { AppConfig, AppSettings, DeveloperTokenExpiry, LyricsRefetchSource, MediaSnapshotPayload, MediaStatePayload, QqLyricsPreview, QqSongCandidate, RuntimeLyricsTimeOffset, ThemeFile, TrackIdentity } from '../types';
 import { buildThemeCss, cloneEditor, mergeThemeCss, restoreThemeEditor, DEFAULT_EDITOR, DEFAULT_THEME_CSS, PRESETS, type ThemeEditor } from '../theme';
 import TextStyleEditor from './TextStyleEditor.vue';
 import LyricsPoolManager from './LyricsPoolManager.vue';
@@ -206,6 +210,8 @@ const activeSection = ref<typeof sections[number]['id']>('general');
 const settings = ref<AppSettings>({
   autoConvertTraditionalToSimplified: true,
   localCacheLimit: 10,
+  lyricsMaxRetries: 3,
+  lyricsAuxiliaryPreference: 'off',
   themeName: 'AMDL 默认',
   themeCss: DEFAULT_THEME_CSS,
   lyricsTimeOffsetMs: 0,
@@ -255,6 +261,25 @@ let pendingLyricsOffsetUpdate: Promise<void> = Promise.resolve();
 const lyricsOffsetInput = ref('0');
 const config = ref<AppConfig>({ lyricsSources: [], amApiTokens: { authToken: '', mediaUserToken: '' }, autoChs: true });
 const tokensExpanded = ref(false);
+const tokenExpiryMessage = ref('');
+const tokenExpiryError = ref(false);
+const tokenExpiryChecking = ref(false);
+async function inspectDeveloperToken() {
+  const token = config.value.amApiTokens.authToken;
+  tokenExpiryChecking.value = true;
+  tokenExpiryMessage.value = '';
+  try {
+    const result = await invoke<DeveloperTokenExpiry>('inspect_apple_developer_token', { token });
+    if (token !== config.value.amApiTokens.authToken) return;
+    const date = new Intl.DateTimeFormat('zh-CN', { year: 'numeric', month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit', second: '2-digit', hour12: false, timeZoneName: 'short' }).format(new Date(result.expiresAt));
+    tokenExpiryError.value = result.expired;
+    tokenExpiryMessage.value = result.expired ? `已过期，到期时间：${date}` : `到期时间：${date}（剩余 ${Math.ceil(result.remainingSeconds / 86400)} 天）`;
+  } catch (error) {
+    if (token !== config.value.amApiTokens.authToken) return;
+    tokenExpiryError.value = true;
+    tokenExpiryMessage.value = String(error);
+  } finally { tokenExpiryChecking.value = false; }
+}
 const sortedLyricsSources = computed(() => [...config.value.lyricsSources].sort((a, b) => a.priority - b.priority));
 
 watch(activeSection, (section) => {
@@ -564,6 +589,12 @@ async function checkForUpdates() {
 .settings-sidebar { width: 176px; flex: 0 0 176px; padding: 28px 14px; box-sizing: border-box; background: #e9e9ed; border-right: 1px solid #d8d8dd; }.brand-mark { display: flex; align-items: center; gap: 9px; margin: 0 14px 30px; font-size: 18px; font-weight: 750; color: #d9428b; }.brand-mark img { width: 28px; height: 28px; border-radius: 7px; }.nav-item { width: 100%; height: 42px; display: flex; align-items: center; gap: 11px; border: 0; border-radius: 7px; padding: 0 13px; color: #55555e; background: transparent; font-size: 14px; cursor: pointer; }.nav-item:hover { background: #dedee4; }.nav-item.active { color: #bd2c76; background: #fff; box-shadow: 0 1px 3px #00000012; font-weight: 650; }
 .settings-content { min-width: 0; flex: 1; padding: 28px 34px 22px; box-sizing: border-box; display: flex; flex-direction: column; }.settings-header { padding-bottom: 18px; border-bottom: 1px solid #dedee3; }.eyebrow { margin: 0 0 5px; color: #c13a7c; font-size: 11px; font-weight: 700; }.settings-header h1 { margin: 0; font-size: 22px; }.settings-list { padding-top: 8px; }.setting-row { min-height: 76px; display: flex; align-items: center; justify-content: space-between; gap: 20px; border-bottom: 1px solid #e1e1e5; }.setting-row strong { font-size: 14px; }.setting-row p { margin: 6px 0 0; color: #85858e; font-size: 12px; }.switch { width: 38px; height: 22px; padding: 2px; border: 0; border-radius: 12px; background: #c6c6cc; cursor: pointer; }.switch span { display: block; width: 18px; height: 18px; border-radius: 50%; background: white; transition: transform .18s; }.switch.on { background: #d53e8b; }.switch.on span { transform: translateX(16px); }
 .sources-workspace { flex: 1; min-height: 0; overflow-y: auto; padding-top: 14px; }.sources-intro strong { font-size: 15px; }.sources-intro p, .token-panel p { margin: 6px 0 14px; color: #85858e; font-size: 12px; }.source-list { display: grid; gap: 8px; }.source-card { min-height: 62px; display: flex; align-items: center; gap: 13px; padding: 0 14px; background: #fff; border: 1px solid #e0e0e5; border-radius: 8px; }.source-card.disabled { opacity: .55; }.source-order { width: 25px; height: 25px; display: grid; place-items: center; border-radius: 50%; color: #bd2c76; background: #f9e5f0; font-size: 12px; font-weight: 700; }.source-info { flex: 1; min-width: 0; }.source-info strong { font-size: 13px; }.source-info p { margin: 4px 0 0; color: #85858e; font-size: 11px; }.source-card .text-command { margin-right: 8px; }.token-panel { display: grid; gap: 10px; margin-top: 14px; padding: 16px; background: #fff; border: 1px solid #dedee3; border-radius: 8px; }.token-panel label { display: grid; gap: 5px; color: #777780; font-size: 11px; }.token-panel input { height: 32px; box-sizing: border-box; padding: 0 8px; border: 1px solid #cfcfd5; border-radius: 4px; }.token-panel .text-command { justify-self: start; padding: 0; }.token-panel p { margin: 0; }
+.settings-list { flex: 1; min-height: 0; overflow-y: auto; }
+.preference-select { width: 250px; max-width: 48%; padding: 8px; border: 1px solid #cfcfd5; border-radius: 5px; background: #fff; color: #55555e; font-size: 12px; }
+.settings-header, .settings-footer { flex-shrink: 0; }
+.token-expiry-row { display: flex; align-items: center; flex-wrap: wrap; gap: 8px 14px; }
+.token-expiry-result { color: #59636d; font-size: 12px; overflow-wrap: anywhere; }
+.token-expiry-result.error { color: #b52d58; }
 /* --- 经典“关于”页面 (Standard About Interface) --- */
 .about-panel {
   flex: 1;

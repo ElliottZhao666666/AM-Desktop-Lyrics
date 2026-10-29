@@ -16,7 +16,7 @@
         <thead><tr><th scope="col">序号</th><th scope="col">歌名</th><th scope="col">艺人</th><th scope="col">专辑</th><th scope="col">Apple Music ID</th><th scope="col">歌词类型</th></tr></thead>
         <tbody>
           <tr v-for="(entry, index) in entries" :key="entry.id" :class="{ selected: selectedId === entry.id }" :aria-selected="selectedId === entry.id" :tabindex="selectedId === entry.id || (!selectedId && index === 0) ? 0 : -1" @click="selectedId = entry.id" @dblclick="pool === 'manual' && editEntry(entry)" @keydown="onRowKey($event, index)">
-            <td class="row-number">{{ index + 1 }}</td><td :title="entry.track.title" class="song-title">{{ entry.track.title }}</td><td :title="entry.track.artist">{{ entry.track.artist || '—' }}</td><td :title="entry.track.album || ''">{{ entry.track.album || '—' }}</td><td class="song-id">{{ entry.appleMusicId || '—' }}</td><td><span class="timing-tag" :class="{ word: entry.timing === 'word' }">{{ entry.timing === 'word' ? '逐字' : '逐行' }}</span></td>
+            <td class="row-number">{{ index + 1 }}</td><td :title="entry.track.title" class="song-title">{{ entry.track.title }}</td><td :title="entry.track.artist">{{ entry.track.artist || '—' }}</td><td :title="entry.track.album || ''">{{ entry.track.album || '—' }}</td><td class="song-id">{{ entry.appleMusicId || '—' }}</td><td><div class="lyrics-type-tags"><span class="timing-tag" :class="{ word: entry.timing === 'word' }">{{ entry.timing === 'word' ? '逐字' : '逐行' }}</span><span v-if="entry.hasTranslation" class="timing-tag translation">翻译</span><span v-if="entry.hasPronunciation" class="timing-tag pronunciation">注音</span></div></td>
           </tr>
         </tbody>
       </table>
@@ -132,13 +132,15 @@ async function onRowKey(event: KeyboardEvent, index: number) {
 .pool-description { margin: 12px 0 16px; color: #85858e; font-size: 12px; }
 .pool-table-wrap { flex: 1; min-height: 130px; overflow: auto; border: 1px solid #dcdce3; background: #fff; border-radius: 7px; position: relative; }
 .pool-table { width: 100%; min-width: 680px; table-layout: fixed; border-collapse: separate; border-spacing: 0; text-align: left; font-size: 12px; }
-.pool-table .number-column { width: 52px; }.pool-table .artist-column { width: 15%; }.pool-table .id-column { width: 124px; }.pool-table .timing-column { width: 80px; }
+.pool-table .number-column { width: 52px; }.pool-table .artist-column { width: 15%; }.pool-table .id-column { width: 124px; }.pool-table .timing-column { width: 164px; }
 .pool-table th { position: sticky; top: 0; z-index: 1; height: 39px; background: #ededf2; color: #74747e; font-size: 11px; font-weight: 500; border-bottom: 1px solid #dcdce3; }
 .pool-table th, .pool-table td { padding: 0 12px; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
 .pool-table td { height: 46px; border-bottom: 1px solid #ededf2; color: #777780; }
 .pool-table tbody tr { cursor: default; outline: none; }.pool-table tbody tr:hover { background: #f7f7fa; }.pool-table tr.selected { background: #fbeaf3 !important; }.pool-table tr.selected td:first-child { box-shadow: inset 3px 0 #d13c86; }.pool-table tr:focus-visible { outline: 2px solid #d13c86; outline-offset: -2px; }
 .pool-table .song-title { color: #33333a; font-weight: 600; }.pool-table .row-number { color: #a0a0a8; }.song-id { font: 11px Consolas, monospace; }
 .timing-tag { display: inline-block; border-radius: 4px; padding: 3px 7px; background: #ededf2; color: #777780; font-size: 10px; }.timing-tag.word { background: #f8e5f0; color: #bd2c76; }
+.lyrics-type-tags { display: flex; align-items: center; gap: 5px; }
+.timing-tag.translation { color: #306b9a; background: #e5f1fb; }.timing-tag.pronunciation { color: #967025; background: #faf0d9; }
 .pool-empty { position: absolute; inset: 40px 0 0; display: flex; flex-direction: column; justify-content: center; align-items: center; gap: 10px; color: #b1b1bb; }.pool-empty strong { color: #777780; font-size: 13px; font-weight: 500; }.pool-empty span { color: #96969e; font-size: 11px; padding: 0 20px; text-align: center; }
 .pool-toolbar { display: flex; align-items: center; gap: 8px; padding-top: 14px; }
 .pool-command { height: 32px; display: inline-flex; align-items: center; justify-content: center; gap: 6px; border: 1px solid #ceced4; border-radius: 5px; padding: 0 12px; background: white; color: #55555e; cursor: pointer; font-size: 12px; }.pool-command:not(:disabled):hover { border-color: #d13c86; color: #bd2c76; }.save-command:not(:disabled) { color: #bd2c76; }.pool-command:disabled, .pool-refresh:disabled, .pool-tabs button:disabled { opacity: .4; cursor: default; }

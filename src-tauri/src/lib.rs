@@ -77,6 +77,10 @@ pub struct AppSettings {
     pub auto_convert_traditional_to_simplified: bool,
     #[serde(default = "default_cache_limit")]
     pub local_cache_limit: u8,
+    #[serde(default = "default_lyrics_max_retries")]
+    pub lyrics_max_retries: u8,
+    #[serde(default)]
+    pub lyrics_auxiliary_preference: domain::LyricsAuxiliaryPreference,
     #[serde(default = "default_theme_name")]
     pub theme_name: String,
     #[serde(default = "default_theme_css")]
@@ -99,6 +103,9 @@ fn default_true() -> bool {
 fn default_cache_limit() -> u8 {
     10
 }
+fn default_lyrics_max_retries() -> u8 {
+    3
+}
 fn default_theme_name() -> String {
     DEFAULT_THEME_NAME.to_string()
 }
@@ -111,6 +118,8 @@ impl Default for AppSettings {
         Self {
             auto_convert_traditional_to_simplified: true,
             local_cache_limit: 10,
+            lyrics_max_retries: 3,
+            lyrics_auxiliary_preference: Default::default(),
             theme_name: default_theme_name(),
             theme_css: default_theme_css(),
             theme_editor: None,
@@ -129,6 +138,7 @@ fn read_settings_unlocked() -> Result<AppSettings, String> {
 
 fn normalize_settings(mut settings: AppSettings) -> AppSettings {
     settings.local_cache_limit = settings.local_cache_limit.clamp(1, 50);
+    settings.lyrics_max_retries = settings.lyrics_max_retries.min(5);
     if settings.theme_name.trim().is_empty() {
         settings.theme_name = default_theme_name();
     }
@@ -163,6 +173,7 @@ fn initialize_runtime_lyrics_offset() {
             AppSettings::default()
         });
         LYRICS_TIME_OFFSET_MS.store(settings.lyrics_time_offset_ms, Ordering::SeqCst);
+        lyrics::provider::apply_retry_limit(settings.lyrics_max_retries);
         LYRICS_TIME_OFFSET_REVISION.store(1, Ordering::SeqCst);
     });
 }
@@ -202,8 +213,12 @@ fn save_settings(app: AppHandle, settings: AppSettings) -> Result<(), String> {
         (settings, conversion_changed)
     };
     drop(runtime_offset_guard);
+    lyrics::provider::apply_retry_limit(settings.lyrics_max_retries);
     apply_always_on_top(&app, settings.lyrics_window_always_on_top)?;
-    lyrics::provider::apply_cache_settings(settings.local_cache_limit as usize, conversion_changed)?;
+    lyrics::provider::apply_cache_settings(
+        settings.local_cache_limit as usize,
+        conversion_changed,
+    )?;
     let _ = app.emit("lyrics-pools-changed", ());
     if conversion_changed {
         lyrics::provider::refresh_current_lyrics(app.clone());
@@ -522,6 +537,11 @@ mod window_preferences_tests {
         }))
         .unwrap();
         assert!(legacy.lyrics_window_always_on_top);
+        assert_eq!(legacy.lyrics_max_retries, 3);
+        assert_eq!(
+            legacy.lyrics_auxiliary_preference,
+            domain::LyricsAuxiliaryPreference::Off
+        );
         let mut settings = legacy;
         settings.lyrics_window_always_on_top = false;
         let restored: AppSettings =
@@ -530,6 +550,27 @@ mod window_preferences_tests {
         assert!(restored.remember_lyrics_window_bounds);
         assert_eq!(restored.lyrics_window_bounds.unwrap().x, -1200);
         assert_eq!(restored.lyrics_time_offset_ms, -1500);
+    }
+
+    #[test]
+    fn retry_settings_preserve_zero_and_limit_to_five() {
+        let disabled: AppSettings =
+            serde_json::from_value(serde_json::json!({"lyricsMaxRetries":0})).unwrap();
+        assert_eq!(normalize_settings(disabled).lyrics_max_retries, 0);
+        let excessive: AppSettings =
+            serde_json::from_value(serde_json::json!({"lyricsMaxRetries":9})).unwrap();
+        assert_eq!(normalize_settings(excessive).lyrics_max_retries, 5);
+    }
+
+    #[test]
+    fn auxiliary_preference_roundtrips_all_choices_and_legacy_defaults_off() {
+        for value in ["off", "translation", "pronunciation"] {
+            let settings: AppSettings =
+                serde_json::from_value(serde_json::json!({"lyricsAuxiliaryPreference": value}))
+                    .unwrap();
+            let persisted = serde_json::to_value(settings).unwrap();
+            assert_eq!(persisted["lyricsAuxiliaryPreference"], value);
+        }
     }
 }
 
@@ -975,6 +1016,7 @@ pub fn run() {
             save_settings,
             get_config,
             save_config,
+            config::inspect_apple_developer_token,
             get_runtime_lyrics_time_offset,
             set_runtime_lyrics_time_offset,
             adjust_runtime_lyrics_time_offset,

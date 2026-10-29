@@ -27,6 +27,7 @@ src-tauri/tauri.local.conf.json
 /docs/codex-md-drafts/
 /scripts/test-*.cjs
 /scripts/fixtures/
+/outputs/
 /docs/REVIEW-*.md
 /docs/FIXES-*.md
 /docs/LYRICS-HIGHLIGHT-AND-MATCHING-*.md

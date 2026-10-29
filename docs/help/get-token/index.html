@@ -90,66 +90,7 @@
 <link rel="icon" type="image/png" href="../../assets/app-icon.png">
 <link rel="apple-touch-icon" href="../../assets/app-icon.png">
 <!-- /amdl:head -->
-    <style>
-        html { scroll-behavior: smooth; scroll-padding-top: 100px; }
-        .article-layout { display: grid; grid-template-columns: minmax(0,1fr) 190px; gap: 36px; max-width: 1100px; padding: 104px 5% 80px; margin: 0 auto; align-items: start; }
-        .article-toc { position: sticky; top: 100px; padding: 12px 0; }
-        .toc-title { margin: 0 0 14px; font-size: 13px; font-weight: 600; color: var(--text-muted); }
-        .article-toc a { display: block; padding: 8px 0; color: #55555b; font-size: 14px; text-decoration: none; transition: color 0.2s; }
-        .article-toc a:hover { color: var(--am-pink); }
-        .article-card { min-width: 0; padding: 40px; background: var(--section-bg); border: 1px solid rgba(0,0,0,0.05); border-radius: 16px; }
-        .article-header { margin-bottom: 30px; padding-bottom: 26px; border-bottom: 1px solid #ededf0; }
-        .breadcrumb { margin-bottom: 18px; }
-        .breadcrumb ol { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; list-style: none; padding: 0; margin: 0; }
-        .breadcrumb li { font-size: 13px; color: #707077; }
-        .breadcrumb li + li::before { content: '/'; margin-right: 8px; color: #b0b0b7; }
-        .breadcrumb a { color: #707077; text-decoration: none; }
-        .article-header h1 { margin: 0; font-size: 32px; font-weight: 750; line-height: 1.45; letter-spacing: -0.025em; overflow-wrap: anywhere; }
-        .mobile-toc { display: none; }
-        .article-card h2 { margin: 0 0 20px; font-size: 25px; line-height: 1.4; letter-spacing: -0.02em; }
-        .article-section + .article-section { margin-top: 40px; padding-top: 32px; border-top: 1px solid #ededf0; }
-        .article-card h3 { margin: 32px 0 14px; font-size: 20px; line-height: 1.5; letter-spacing: -0.01em; }
-        .article-card p { margin: 0 0 18px; }
-        .article-card p, .article-card li { font-size: 16px; line-height: 1.9; overflow-wrap: anywhere; }
-        .article-card a { color: var(--am-pink-dark); text-underline-offset: 4px; }
-        .article-card strong { font-weight: 650; }
-        .article-card code { padding: 3px 6px; border-radius: 5px; font-family: "SFMono-Regular", Consolas, "Liberation Mono", monospace; font-size: 0.88em; background: #f4f4f7; color: #8e315c; overflow-wrap: anywhere; }
-        .article-figure { display: block; margin: 24px 0 28px; }
-        .article-figure a { display: block; }
-        .article-figure img { display: block; width: 100%; height: auto; box-sizing: border-box; border: 1px solid rgba(0,0,0,0.07); border-radius: 12px; box-shadow: 0 8px 24px rgba(0,0,0,0.06); }
-        .article-figure figcaption { margin-top: 12px; color: var(--text-muted); font-size: 13px; line-height: 1.7; text-align: center; }
-        .steps { margin: 0; padding: 0; list-style: none; counter-reset: step; }
-        .steps > li { position: relative; padding-top: 30px; margin-top: 30px; border-top: 1px solid #ededf0; counter-increment: step; }
-        .steps > li:first-child { margin-top: 0; padding-top: 0; border-top: 0; }
-        .steps > li > h3 { display: flex; align-items: baseline; gap: 12px; margin-top: 0; }
-        .steps > li > h3::before { content: counter(step, decimal-leading-zero); color: var(--am-pink); font-size: 14px; font-weight: 700; flex-shrink: 0; }
-        .article-card ul { margin: 16px 0 24px; padding-left: 24px; }
-        .article-card ul li { margin-bottom: 12px; padding-left: 3px; }
-        .article-card ul ul { margin-top: 10px; margin-bottom: 0; }
-        .back-top { display: inline-block; margin-top: 24px; font-size: 14px; }
-        .article-meta { margin-top: 36px; padding-top: 20px; border-top: 1px solid #ededf0; color: #707077; }
-        .article-meta p { margin: 0; font-size: 13px; }
-        @media (max-width: 860px) {
-            .article-layout { grid-template-columns: minmax(0,1fr); padding-top: 92px; }
-            .article-toc { display: none; }
-            .article-card { padding: 28px; }
-            .article-header h1 { font-size: 29px; }
-            .mobile-toc { display: block; margin: 0 0 28px; padding: 14px 18px; border-radius: 8px; background: #f5f5f8; }
-            .mobile-toc summary { cursor: pointer; font-size: 14px; font-weight: 600; }
-            .mobile-toc nav { display: grid; gap: 8px; padding-top: 14px; }
-            .mobile-toc a { font-size: 14px; text-decoration: none; }
-        }
-        @media (max-width: 480px) {
-            .article-layout { padding: 80px 4% 48px; }
-            .article-card { padding: 24px 20px; border-radius: 12px; }
-            .article-header h1 { font-size: 26px; }
-            .article-card h2 { font-size: 22px; }
-            .article-card h3 { font-size: 19px; }
-            .article-card p, .article-card li { font-size: 15px; }
-        }
-        @media (prefers-reduced-motion: reduce) { html { scroll-behavior: auto; } *, *::before, *::after { transition: none !important; } }
-        @media print { .article-toc, .mobile-toc, .back-top { display: none; } .article-layout { display: block; padding: 0; } .article-card { padding: 0; border: 0; } .article-figure { break-inside: avoid; } }
-    </style>
+    <link rel="stylesheet" href="../../assets/article.css">
 </head>
 <body id="page-top">
     <!-- amdl:header -->
@@ -160,7 +101,8 @@
         AMDL
     </a>
     <nav class="nav-links" aria-label="主导航">
-        <a href="../../help/get-token/index.html" aria-current="page">帮助</a>
+        <a href="../../help/quick-start/index.html">快速入门</a>
+        <a href="../../help/get-token/index.html" aria-current="page">获取 Token</a>
         <a href="https://github.com/ElliottZhao666666/AM-Desktop-Lyrics" target="_blank" rel="noopener">GitHub 仓库</a>
         <a href="https://www.ybjun.com" target="_blank" rel="noopener">月半菌</a>
     </nav>
@@ -229,7 +171,7 @@
 <h3 id="token-expiry">2. Token 的有效期有多长？</h3>
 <p>这两个凭证并不是永久有效的，它们各自的生命周期如下：</p>
 <ul>
-<li><strong><code>Authorization</code> 的有效期</strong>：苹果官方签发的网页端公用 Token 有效期通常在 <strong>2 到 6 个月</strong> 左右。只有当苹果在网页端轮换了新密钥时，你才需要按照上文步骤重新抓取替换（或者直接等待 AMDL 发布新版本更新内置默认值）。</li>
+<li><strong><code>Authorization</code> 的有效期</strong>：以该 Token 声明的到期时间为准。AMDL 1.0.2 可在<strong>歌词渠道</strong>页面点击<strong>检测有效期</strong>，查看当前开发者 Token 的到期时间。此操作在本机解析，不代表服务器授权校验；到期后可按上文步骤获取新的 Token。</li>
 <li><strong><code>Media-User-Token</code> 的有效期</strong>：个人凭证的有效期通常为 <strong>数周至数月不等</strong>（一般在 1~6 个月之间）。只要你不主动退出网页端，它可以稳定维持很长时间。但如果你执行了以下操作，该 Token 可能会<strong>立即失效</strong>：<ul>
 <li>在获取 Token 的浏览器中，手动点击了 Apple Music 网页版的“退出登录”；</li>
 <li>修改了你的 Apple ID 密码或重置了安全设置；</li>
@@ -263,6 +205,8 @@
     </main>
     <!-- amdl:footer -->
 <footer class="site-footer">
+    <div class="footer-brand"><img src="../../assets/app-icon.png" width="28" height="28" alt=""><strong>AMDL</strong></div>
+    <nav class="footer-links" aria-label="页脚导航"><a href="../../index.html">首页</a><a href="../../help/quick-start/index.html">快速入门</a><a href="../../help/get-token/index.html">获取 Token</a><a href="https://github.com/ElliottZhao666666/AM-Desktop-Lyrics/releases" target="_blank" rel="noopener">版本与更新日志</a></nav>
     <p>AMDL 属于开源项目。Apple Music 是 Apple Inc. 的商标。</p>
     <p>Designed &amp; Developed by <a href="https://www.ybjun.com" target="_blank" rel="noopener">月半菌</a>. All rights reserved.</p>
 </footer>

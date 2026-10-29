@@ -1,0 +1,60 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>AMDL 快速入门：安装、歌词渠道与桌面面板 | AMDL 帮助</title>
+    <link rel="canonical" href="https://amdl.ybjun.com/help/quick-start/">
+    <meta name="description" content="从安装 AMDL 到显示第一首 Windows Apple Music 桌面歌词：了解歌词渠道、Token、匹配歌词、歌词池、主题外观和面板锁定。">
+    <meta name="author" content="月半菌">
+    <meta name="robots" content="index, follow, max-image-preview:large">
+    <meta property="og:type" content="article"><meta property="og:site_name" content="AMDL 官方网站"><meta property="og:locale" content="zh_CN"><meta property="og:url" content="https://amdl.ybjun.com/help/quick-start/"><meta property="og:title" content="AMDL 快速入门：从安装到第一句歌词"><meta property="og:description" content="跟着步骤安装 AMDL，播放 Apple Music，并设置歌词渠道、主题和歌词面板。"><meta property="og:image" content="https://amdl.ybjun.com/assets/website-preview.png"><meta name="twitter:card" content="summary_large_image">
+    <script type="application/ld+json">{"@context":"https://schema.org","@graph":[{"@type":"Article","@id":"https://amdl.ybjun.com/help/quick-start/#article","headline":"AMDL 快速入门：从安装到第一句歌词","description":"AMDL 安装、播放、歌词渠道、匹配、歌词池与桌面面板使用指南。","inLanguage":"zh-CN","isAccessibleForFree":true,"dateModified":"2026-10-29","mainEntityOfPage":"https://amdl.ybjun.com/help/quick-start/","author":{"@type":"Person","name":"月半菌","url":"https://www.ybjun.com"},"image":"https://amdl.ybjun.com/assets/website-preview.png"},{"@type":"BreadcrumbList","@id":"https://amdl.ybjun.com/help/quick-start/#breadcrumb","itemListElement":[{"@type":"ListItem","position":1,"name":"AMDL 官网","item":"https://amdl.ybjun.com/"},{"@type":"ListItem","position":2,"name":"快速入门","item":"https://amdl.ybjun.com/help/quick-start/"}]}]}</script>
+    <!-- amdl:head -->
+<link rel="stylesheet" href="../../assets/site.css">
+<link rel="icon" type="image/png" href="../../assets/app-icon.png">
+<link rel="apple-touch-icon" href="../../assets/app-icon.png">
+<!-- /amdl:head -->
+    <link rel="stylesheet" href="../../assets/article.css">
+    <script src="../../assets/download.js" defer></script>
+</head>
+<body id="page-top">
+    <!-- amdl:header -->
+<header class="site-header">
+    <a href="#main-content" class="skip-link">跳到正文</a>
+    <a href="../../index.html" class="brand" aria-label="AMDL 官网首页">
+        <img src="../../assets/app-icon.png" alt="AMDL 图标" width="32" height="32">
+        AMDL
+    </a>
+    <nav class="nav-links" aria-label="主导航">
+        <a href="../../help/quick-start/index.html" aria-current="page">快速入门</a>
+        <a href="../../help/get-token/index.html">获取 Token</a>
+        <a href="https://github.com/ElliottZhao666666/AM-Desktop-Lyrics" target="_blank" rel="noopener">GitHub 仓库</a>
+        <a href="https://www.ybjun.com" target="_blank" rel="noopener">月半菌</a>
+    </nav>
+</header>
+<!-- /amdl:header -->
+    <main id="main-content"><div class="article-layout"><article class="article-card" aria-labelledby="article-title">
+        <header class="article-header"><nav class="breadcrumb" aria-label="面包屑导航"><ol><li><a href="../../index.html">AMDL 官网</a></li><li aria-current="page">快速入门</li></ol></nav><h1 id="article-title">AMDL 快速入门</h1><p class="guide-intro">适用于 AMDL 1.0.2。从安装到第一句桌面歌词，按下面的步骤开始，再按自己的习惯调整翻译、注音、渠道和外观。</p></header>
+        <details class="mobile-toc"><summary>本页目录</summary><nav aria-label="文章目录"><a href="#installation">下载安装</a><a href="#first-song">显示第一首歌</a><a href="#sources">歌词渠道与 Token</a><a href="#localization">翻译与注音</a><a href="#appearance">外观与同步</a><a href="#matching">重新获取与匹配</a><a href="#pools">歌词池</a><a href="#window">面板操作</a><a href="#troubleshooting">遇到问题</a></nav></details>
+        <section class="article-section" aria-labelledby="installation"><h2 id="installation">1. 下载并安装</h2><p>AMDL 适用于 <strong>Windows 10 / 11 x64</strong>，需要电脑上安装 Windows 版 Apple Music。下载最新安装包，按安装向导完成安装即可。</p><p class="guide-download"><a data-download href="https://github.com/ElliottZhao666666/AM-Desktop-Lyrics/releases/latest" target="_blank" rel="noopener">下载 AMDL Windows 版 ↗</a><span data-release-version>最新版本见 Release</span><span data-release-size></span></p><p>首次打开后，AMDL 会在系统托盘运行。以后可从托盘图标打开设置或控制歌词面板。</p></section>
+        <section class="article-section" aria-labelledby="first-song"><h2 id="first-song">2. 播放第一首歌</h2><p>启动 <strong>Apple Music Windows 客户端</strong>并播放一首歌，AMDL 会读取当前歌曲信息、匹配歌词，再在桌面显示。如果暂时只看到歌名和艺人，先等歌曲播放片刻，再检查下方的歌词渠道设置。</p><figure class="article-figure"><a href="../../assets/lyrics-preview.png" target="_blank" rel="noopener"><img src="../../assets/lyrics-preview.png" width="1000" height="170" alt="AMDL 显示逐字高亮歌词的桌面面板" loading="lazy" decoding="async"></a><figcaption>正在播放时的歌词面板 · 点击查看原图</figcaption></figure></section>
+        <section class="article-section" aria-labelledby="sources"><h2 id="sources">3. 选择歌词渠道</h2><p>打开设置的<strong>歌词渠道</strong>页面，可以启用渠道并调整优先级。当前可用的来源包括 Apple Music 官方 API、Apple Music Windows 客户端本地缓存、QQ 音乐，以及你保存的手动匹配池。显示逐字还是逐行，取决于实际找到的歌词内容。</p><p><strong>Token 是可选配置。</strong>只有使用 Apple Music 官方 API 歌词渠道时，才需要配置 Apple Music 授权信息。希望获取官方接口提供的 TTML 逐字歌词，可按照 <a href="../get-token/index.html">获取 Token 教程</a>设置；其他渠道不依赖个人 Token。</p><p>“Apple Music 本地缓存”是客户端自己的缓存，和 AMDL 设置中的“缓存池”是两回事：前者是歌词来源，后者用于保存 AMDL 近期获取的歌词，减少重复请求。</p><p>可在<strong>通用</strong>设置中调整<strong>获取失败时最大重试次数</strong>，范围为 0～5，默认 3；0 表示首次失败后不再自动重试。</p></section>
+        <section class="article-section" aria-labelledby="localization"><h2 id="localization">4. 打开翻译与注音</h2><p>当获取到的官方歌词包含翻译或注音时，控制条的“下一曲”右侧会出现翻译图标。只有一种内容时，点击图标即可开关；两种都有时，在弹出菜单中分别选择。</p><p>在<strong>通用</strong>设置的<strong>当有歌词翻译/注音时</strong>选择默认关闭、优先翻译或优先注音。手动开关在本次运行中分别保留，切歌后继续生效；两项均手动开启时优先显示翻译，重启后重新采用默认偏好。</p><figure class="article-figure"><a href="../../assets/translation-preview.png" target="_blank" rel="noopener"><img src="../../assets/translation-preview.png" width="1000" height="210" alt="AMDL 歌词翻译显示示例" loading="lazy" decoding="async"></a><figcaption>翻译跟随对应主句；有逐字时间的注音可连续高亮</figcaption></figure><p>内容是否可用取决于官方歌词数据。新版 Apple Music 的逐字缓存也可提供这些内容；使用官方 API 渠道时仍需按教程配置 Token。</p></section>
+        <section class="article-section" aria-labelledby="appearance"><h2 id="appearance">5. 调整外观与歌词时间</h2><p>在设置的<strong>外观</strong>页面调整字体、字号、颜色、渐变、高亮和阴影；支持导入或导出 <code>.amdlcss</code> 主题。完成修改后点击<strong>保存并生效</strong>。</p><figure class="article-figure"><a href="../../assets/settings-preview.png" target="_blank" rel="noopener"><img src="../../assets/settings-preview.png" width="1160" height="680" alt="AMDL 外观设置与主题编辑器" loading="lazy" decoding="async"></a><figcaption>外观设置 · 点击查看原图</figcaption></figure><p>如果歌词整体偏早或偏晚，可用歌词面板上的<strong>提前 500ms</strong>、<strong>延后 500ms</strong>按钮微调，也可以在设置里输入歌词显示偏移值。负值让歌词提前，正值让歌词延后。</p></section>
+        <section class="article-section" aria-labelledby="matching"><h2 id="matching">6. 歌词不对时重新匹配</h2><p>在设置的<strong>匹配歌词</strong>页面点击<strong>重新获取歌词</strong>，AMDL 会按当前渠道设置重新读取缓存、匹配歌曲，并依照优先级获取和显示歌词。按钮右侧的小菜单可以单独重新获取 AM API、本地缓存或 Q 音歌词。</p><p>如果自动匹配的版本不对，搜索歌曲并预览候选歌词。选择<strong>应用此歌词</strong>会立即使用它；选择<strong>应用并加入手动匹配池</strong>还会把这次选择保存，供以后播放使用。</p><figure class="article-figure"><a href="../../assets/match-preview.png" target="_blank" rel="noopener"><img src="../../assets/match-preview.png" width="1160" height="680" alt="AMDL 搜索并预览候选歌词" loading="lazy" decoding="async"></a><figcaption>匹配歌词页面 · 点击查看原图</figcaption></figure></section>
+        <section class="article-section" aria-labelledby="pools"><h2 id="pools">7. 管理缓存池与手动匹配池</h2><p><strong>缓存池</strong>保留最近使用的歌曲歌词，容量可在<strong>通用</strong>设置中调整。缓存条目不能直接编辑，但可以选中后保存到<strong>手动匹配池</strong>。</p><p><strong>手动匹配池</strong>保存你确认的歌词。可添加新歌词、编辑歌名与艺人等歌曲信息、填写 Apple Music 歌曲 ID，或粘贴 TTML / LRC 歌词。保存时 AMDL 会检查格式并解析为逐字或逐行歌词，翻译与注音也会一并保留。列表中的彩色标签可帮助判断已有内容。</p><figure class="article-figure"><a href="../../assets/pool-preview.png" target="_blank" rel="noopener"><img src="../../assets/pool-preview.png" width="1160" height="680" alt="AMDL 缓存池和手动匹配池管理页面" loading="lazy" decoding="async"></a><figcaption>歌词池管理 · 点击查看原图</figcaption></figure></section>
+        <section class="article-section" aria-labelledby="window"><h2 id="window">8. 放到合适的桌面位置</h2><p>拖动并调整歌词面板尺寸，让它避开你正在使用的窗口。锁定后，鼠标移到歌词面板顶部可显示解锁按钮；系统托盘菜单也能解锁。</p><p>在<strong>通用</strong>设置或托盘菜单中切换<strong>保持歌词面板置顶</strong>。如果面板跑到了其他显示器或屏幕外，可用托盘菜单的<strong>重置歌词面板位置</strong>，把它恢复到主显示器上的默认位置和尺寸。</p></section>
+        <section class="article-section" aria-labelledby="troubleshooting"><h2 id="troubleshooting">遇到问题？</h2><ul><li><strong>没有歌词：</strong>确认 Windows 版 Apple Music 正在播放、歌词渠道已启用，并尝试“重新获取歌词”；也可先在 Apple Music 打开当前歌曲的歌词，再重试。可在设置的日志页查看命中的渠道与处理结果。</li><li><strong>只显示逐行：</strong>说明当前来源仅提供逐行时间信息；尝试启用其他渠道或手动匹配有逐字时间标签的歌词。</li><li><strong>官方 API 突然无法使用：</strong>可在歌词渠道页查看开发者 Token 到期时间，并检查用户 Token 是否仍有效，并参考 <a href="../get-token/index.html">获取 Token 教程</a>重新设置。</li><li><strong>歌词面板找不到：</strong>从系统托盘选择“重置歌词面板位置”。</li></ul><p>还需要帮助？可在 <a href="https://github.com/ElliottZhao666666/AM-Desktop-Lyrics/issues" target="_blank" rel="noopener">GitHub Issues</a> 描述遇到的问题。</p></section>
+        <div class="article-meta"><p>作者：<a href="https://www.ybjun.com" target="_blank" rel="author noopener">月半菌</a> · 更新于 <time datetime="2026-10-29">2026-10-29</time></p></div><a class="back-top" href="#page-top">返回顶部 ↑</a>
+    </article><aside class="article-toc" aria-label="文章目录"><p class="toc-title">本页内容</p><nav><a href="#installation">下载安装</a><a href="#first-song">显示第一首歌</a><a href="#sources">歌词渠道与 Token</a><a href="#localization">翻译与注音</a><a href="#appearance">外观与同步</a><a href="#matching">重新获取与匹配</a><a href="#pools">歌词池</a><a href="#window">面板操作</a><a href="#troubleshooting">遇到问题</a></nav></aside></div></main>
+    <!-- amdl:footer -->
+<footer class="site-footer">
+    <div class="footer-brand"><img src="../../assets/app-icon.png" width="28" height="28" alt=""><strong>AMDL</strong></div>
+    <nav class="footer-links" aria-label="页脚导航"><a href="../../index.html">首页</a><a href="../../help/quick-start/index.html">快速入门</a><a href="../../help/get-token/index.html">获取 Token</a><a href="https://github.com/ElliottZhao666666/AM-Desktop-Lyrics/releases" target="_blank" rel="noopener">版本与更新日志</a></nav>
+    <p>AMDL 属于开源项目。Apple Music 是 Apple Inc. 的商标。</p>
+    <p>Designed &amp; Developed by <a href="https://www.ybjun.com" target="_blank" rel="noopener">月半菌</a>. All rights reserved.</p>
+</footer>
+<!-- /amdl:footer -->
+</body>
+</html>

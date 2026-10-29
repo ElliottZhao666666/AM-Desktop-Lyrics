@@ -73,6 +73,7 @@ const FALLBACK_HTML = `
 `;
 
 import { handleUpdate } from './updater.js';
+import { handleReleaseInfo } from './releases.js';
 
 export default {
   async fetch(request, env) {
@@ -80,7 +81,9 @@ export default {
     if (request.method === 'OPTIONS') return new Response(null, { status: 204, headers });
     if (request.method !== 'GET' && request.method !== 'HEAD') return new Response(null, { status: 405, headers: { ...headers, Allow: 'GET, HEAD, OPTIONS' } });
     const url = new URL(request.url);
-    const response = url.pathname.startsWith('/u/')
+    const response = url.pathname.startsWith('/api/')
+      ? await handleReleaseInfo(url, env)
+      : url.pathname.startsWith('/u/')
       ? await handleUpdate(url, env)
       : new Response(FALLBACK_HTML, { headers: { ...headers, 'Content-Type': 'text/html; charset=utf-8' } });
     return request.method === 'HEAD' ? new Response(null, { status: response.status, headers: response.headers }) : response;

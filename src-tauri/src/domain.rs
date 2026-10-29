@@ -28,6 +28,15 @@ pub struct LyricWord {
     pub end_ms: u64,
 }
 
+/// 与正文行绑定的某种语言文本。words 仅在来源确有词级时间时填写。
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct LocalizedLyricText {
+    pub language: String,
+    pub text: String,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub words: Vec<LyricWord>,
+}
+
 /// 一行歌词，words 为空时表示只有逐行时间轴。
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct LyricLine {
@@ -35,6 +44,19 @@ pub struct LyricLine {
     pub end_ms: Option<u64>,
     pub words: Vec<LyricWord>,
     pub text: String,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub translations: Vec<LocalizedLyricText>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub pronunciations: Vec<LocalizedLyricText>,
+}
+
+#[derive(Debug, Clone, Copy, Default, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub enum LyricsAuxiliaryPreference {
+    #[default]
+    Off,
+    Translation,
+    Pronunciation,
 }
 
 /// 统一的歌词文档格式。内存 TTML 和 AMLL-DB 最终都转换为此模型。
@@ -60,6 +82,8 @@ pub enum LyricsTiming {
 pub struct LyricsStorage {
     pub apple_music_id: Option<String>,
     pub timing: Option<LyricsTiming>,
+    #[serde(default)]
+    pub localization_version: u8,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]

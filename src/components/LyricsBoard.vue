@@ -8,10 +8,7 @@
         <div class="amdl-lyric-line is-active">{{ displayText }}</div>
       </template>
       <template v-else-if="displayLines.length">
-        <template v-for="line in displayLines" :key="`${line.begin_ms}-${line.text}`">
-          <KaraokeLine v-if="line.words?.length" :line="line" :position-ms="positionMs" />
-          <div v-else class="amdl-lyric-line is-active">{{ line.text }}</div>
-        </template>
+        <LyricsLineGroup v-for="(line, index) in displayLines" :key="`${line.begin_ms}-${line.text}-${index}`" :line="line" :position-ms="positionMs" :auxiliary-mode="auxiliaryMode ?? 'off'" />
       </template>
     </div>
 
@@ -21,8 +18,8 @@
 <script setup lang="ts">
 import { computed } from 'vue';
 
-import type { LyricsDocument, LyricsLoadState } from '../types';
-import KaraokeLine from './KaraokeLine.vue';
+import type { LyricsAuxiliaryMode, LyricsDocument, LyricsLoadState } from '../types';
+import LyricsLineGroup from './LyricsLineGroup.vue';
 
 const props = defineProps<{
   title: string;
@@ -33,6 +30,7 @@ const props = defineProps<{
   lyrics: LyricsDocument | null;
   lyricsState: LyricsLoadState;
   lyricsMessage: string | null;
+  auxiliaryMode?: LyricsAuxiliaryMode;
 }>();
 
 /** 计算当前显示的歌词；逐行歌词在整个显示期间保持高亮。 */

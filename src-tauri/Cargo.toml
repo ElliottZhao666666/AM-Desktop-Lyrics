@@ -1,6 +1,6 @@
 [package]
 name = "amdl"
-version = "1.0.1"
+version = "1.0.2"
 description = "Apple Music Desktop Lyrics"
 authors = ["月半菌"]
 homepage = "https://amdl.ybjun.com"
@@ -39,6 +39,7 @@ windows = { version = "0.61", features = [
     "Win32_UI_WindowsAndMessaging",
 ] }
 tokio = { version = "1", features = ["rt", "time", "sync"] }
+futures-util = { version = "0.3", default-features = false, features = ["std", "async-await"] }
 tauri-plugin-dialog = "2.7.2"
 winreg = "0.56.0"
 tauri-plugin-updater = "2.11.0"

@@ -4,7 +4,7 @@ on:
   workflow_dispatch:
     inputs:
       tag:
-        description: '要构建的已有版本标签，例如 v1.0.1'
+        description: '要构建的已有版本标签，例如 v1.0.2'
         required: true
         type: string
   push:

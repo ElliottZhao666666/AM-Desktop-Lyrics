@@ -35,9 +35,11 @@ for await (const file of pages(docs)) {
     const values = {
         homeHref: `${base}index.html`,
         helpHref: `${base}help/get-token/index.html`,
+        quickStartHref: `${base}help/quick-start/index.html`,
         iconSrc: `${base}assets/app-icon.png`,
         cssHref: `${base}assets/site.css`,
-        helpCurrent: relative.startsWith('help/') ? ' aria-current="page"' : '',
+        helpCurrent: relative.startsWith('help/get-token/') ? ' aria-current="page"' : '',
+        quickStartCurrent: relative.startsWith('help/quick-start/') ? ' aria-current="page"' : '',
     };
     let output = original;
     for (const name of ['head', 'header', 'footer']) {

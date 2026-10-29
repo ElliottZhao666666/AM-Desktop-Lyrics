@@ -20,6 +20,7 @@
         <button class="flex h-7 w-7 items-center justify-center transition-colors hover:text-pink-400 active:scale-90" @mousedown.stop @click="emit('prev')" title="上一曲"><SkipBack :size="16" /></button>
         <button class="flex h-7 w-7 items-center justify-center transition-colors hover:text-pink-400 active:scale-90" @mousedown.stop @click="emit('playPause')" title="播放/暂停"><Pause v-if="isPlaying" :size="17" /><Play v-else :size="17" /></button>
         <button class="flex h-7 w-7 items-center justify-center transition-colors hover:text-pink-400 active:scale-90" @mousedown.stop @click="emit('next')" title="下一曲"><SkipForward :size="16" /></button>
+        <LyricsAuxiliaryToggle v-if="auxiliaryAvailable?.translation || auxiliaryAvailable?.pronunciation" :translation="!!auxiliaryAvailable?.translation" :pronunciation="!!auxiliaryAvailable?.pronunciation" :mode="auxiliaryMode ?? 'off'" :enabled="auxiliaryEnabled ?? { translation: false, pronunciation: false }" :visible="show" @change="emit('auxiliaryChange', $event)" />
         <span class="mx-1 h-4 w-px bg-white/25" aria-hidden="true" />
         <button class="flex h-7 w-7 items-center justify-center transition-colors hover:text-pink-400 active:scale-90" @mousedown.stop @click="emit('lyricsEarlier')" title="歌词提前 500ms"><ArrowLeft :size="16" /></button>
         <button class="flex h-7 w-7 items-center justify-center transition-colors hover:text-pink-400 active:scale-90" @mousedown.stop @click="emit('lyricsLater')" title="歌词延后 500ms"><ArrowRight :size="16" /></button>
@@ -39,6 +40,9 @@
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue';
 import { getCurrentWindow } from '@tauri-apps/api/window';
 import { ArrowLeft, ArrowRight, Pause, Play, Settings, SkipBack, SkipForward, Unlock, X } from '@lucide/vue';
+import LyricsAuxiliaryToggle from './LyricsAuxiliaryToggle.vue';
+import type { AuxiliaryAvailability } from '../localization';
+import type { LyricsAuxiliaryMode } from '../types';
 
 const props = defineProps<{
   show: boolean;
@@ -47,8 +51,11 @@ const props = defineProps<{
   isPlaying: boolean;
   positionMs: number;
   durationMs: number;
+  auxiliaryAvailable?: AuxiliaryAvailability;
+  auxiliaryMode?: LyricsAuxiliaryMode;
+  auxiliaryEnabled?: AuxiliaryAvailability;
 }>();
-const emit = defineEmits(['prev', 'playPause', 'next', 'lyricsEarlier', 'lyricsLater', 'toggleLock', 'settings', 'close']);
+const emit = defineEmits(['prev', 'playPause', 'next', 'lyricsEarlier', 'lyricsLater', 'toggleLock', 'settings', 'close', 'auxiliaryChange']);
 const progressPercent = computed(() => props.durationMs > 0 ? Math.min(props.positionMs / props.durationMs * 100, 100) : 0);
 const trackViewport = ref<HTMLElement | null>(null);
 const trackText = ref<HTMLElement | null>(null);

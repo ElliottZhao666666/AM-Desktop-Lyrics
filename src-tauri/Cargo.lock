@@ -34,11 +34,12 @@ dependencies = [
 
 [[package]]
 name = "amdl"
-version = "1.0.1"
+version = "1.0.2"
 dependencies = [
  "base64 0.22.1",
  "chrono",
  "ferrous-opencc",
+ "futures-util",
  "quick-xml 0.38.4",
  "reqwest 0.12.28",
  "serde",

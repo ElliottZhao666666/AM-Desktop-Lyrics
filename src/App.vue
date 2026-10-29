@@ -20,9 +20,13 @@
       :is-playing="isPlaying"
       :position-ms="positionMs"
       :duration-ms="durationMs"
+      :auxiliary-available="availableAuxiliary"
+      :auxiliary-mode="auxiliaryMode"
+      :auxiliary-enabled="enabledAuxiliary"
       @prev="onPrev"
       @playPause="onPlayPause"
       @next="onNext"
+      @auxiliaryChange="setAuxiliaryEnabled"
       @lyricsEarlier="adjustLyricsOffset(-500)"
       @lyricsLater="adjustLyricsOffset(500)"
       @settings="onSettings"
@@ -38,6 +42,7 @@
       :lyrics="currentLyrics"
       :lyrics-state="lyricsState"
       :lyrics-message="lyricsMessage"
+      :auxiliary-mode="auxiliaryMode"
     />
   </div>
 </template>
@@ -58,6 +63,7 @@ import LyricsPoolEditor from './components/LyricsPoolEditor.vue';
 import type {
   AppSettings,
   LyricsDocument,
+  LyricsAuxiliaryMode,
   LyricsLoadState,
   LyricsSnapshotPayload,
   MediaPositionPayload,
@@ -66,6 +72,7 @@ import type {
   RuntimeLyricsTimeOffset,
 } from './types';
 import { PlaybackClock } from './playback-clock';
+import { auxiliaryAvailability, preferredAuxiliaryMode } from './localization';
 
 const currentWindowLabel = getCurrentWindow().label;
 const isSettingsWindow = currentWindowLabel === 'settings';
@@ -91,6 +98,23 @@ const durationMs = ref(0);
 const lyricsTimeOffsetMs = ref(0);
 let lyricsTimeOffsetRevision = -1;
 const currentLyrics = ref<LyricsDocument | null>(null);
+const auxiliaryPreference = ref<LyricsAuxiliaryMode>('off');
+const availableAuxiliary = computed(() => auxiliaryAvailability(currentLyrics.value));
+// null 表示本次运行尚未手动操作；第一次操作后，两项开关独立保留到退出。
+const sessionTranslationEnabled = ref<boolean | null>(null);
+const sessionPronunciationEnabled = ref<boolean | null>(null);
+const enabledAuxiliary = computed(() => {
+  if (sessionTranslationEnabled.value !== null) {
+    return { translation: sessionTranslationEnabled.value, pronunciation: sessionPronunciationEnabled.value === true };
+  }
+  const mode = preferredAuxiliaryMode(auxiliaryPreference.value, availableAuxiliary.value);
+  return { translation: mode === 'translation', pronunciation: mode === 'pronunciation' };
+});
+const auxiliaryMode = computed<LyricsAuxiliaryMode>(() => {
+  if (enabledAuxiliary.value.translation && availableAuxiliary.value.translation) return 'translation';
+  if (enabledAuxiliary.value.pronunciation && availableAuxiliary.value.pronunciation) return 'pronunciation';
+  return 'off';
+});
 const lyricsState = ref<LyricsLoadState>('loading');
 const lyricsMessage = ref<string | null>(null);
 const controlsLocked = ref(false);
@@ -147,6 +171,24 @@ function applyTheme(css: string) {
     document.head.appendChild(style);
   }
   style.textContent = css;
+}
+
+function setAuxiliaryEnabled(change: { mode: Exclude<LyricsAuxiliaryMode, 'off'>; enabled: boolean }) {
+  if (!availableAuxiliary.value[change.mode]) return;
+  // 手动选择接管默认偏好，未手动开启的另一种内容不随切歌自动打开。
+  if (sessionTranslationEnabled.value === null) {
+    sessionTranslationEnabled.value = false;
+    sessionPronunciationEnabled.value = false;
+  }
+  if (change.mode === 'translation') sessionTranslationEnabled.value = change.enabled;
+  else sessionPronunciationEnabled.value = change.enabled;
+}
+
+function applySettings(settings: AppSettings) {
+  applyTheme(settings.themeCss);
+  const preference = settings.lyricsAuxiliaryPreference === 'translation' || settings.lyricsAuxiliaryPreference === 'pronunciation'
+    ? settings.lyricsAuxiliaryPreference : 'off';
+  auxiliaryPreference.value = preference;
 }
 
 function applyLyricsTimeOffset(payload: RuntimeLyricsTimeOffset) {
@@ -234,13 +276,13 @@ onMounted(async () => {
   unlistenLyricsTimeOffset = await listen<RuntimeLyricsTimeOffset>('lyrics-time-offset-changed', (event) => {
     applyLyricsTimeOffset(event.payload);
   });
-  unlistenSettings = await listen<AppSettings>('settings-changed', (event) => applyTheme(event.payload.themeCss));
+  unlistenSettings = await listen<AppSettings>('settings-changed', (event) => applySettings(event.payload));
   const [settingsResult, offsetResult] = await Promise.allSettled([
     invoke<AppSettings>('get_settings'),
     invoke<RuntimeLyricsTimeOffset>('get_runtime_lyrics_time_offset'),
   ]);
   if (settingsResult.status === 'fulfilled') {
-    applyTheme(settingsResult.value.themeCss);
+    applySettings(settingsResult.value);
     // 偏移命令失败时仍能使用持久化值，不让主题或可选设置阻断恢复。
     if (offsetResult.status === 'rejected' && lyricsTimeOffsetRevision < 0) lyricsTimeOffsetMs.value = settingsResult.value.lyricsTimeOffsetMs;
   } else console.error('get_settings failed:', settingsResult.reason);

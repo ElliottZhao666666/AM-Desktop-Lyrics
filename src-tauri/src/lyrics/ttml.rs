@@ -1,4 +1,6 @@
-use crate::domain::{LyricLine, LyricWord, LyricsDocument, LyricsSource, TrackIdentity};
+use crate::domain::{
+    LocalizedLyricText, LyricLine, LyricWord, LyricsDocument, LyricsSource, TrackIdentity,
+};
 use quick_xml::{escape::unescape, events::Event, Reader};
 use std::{collections::BTreeMap, error::Error};
 type ParseResult<T> = Result<T, Box<dyn Error + Send + Sync>>;
@@ -140,7 +142,9 @@ pub fn parse_ttml_with_translation(
     let body = find(&root, "body").ok_or("TTML body missing")?;
     let duration_ms = body.time("dur")?;
     let mut lines = Vec::new();
-    collect_lines(body, None, None, &mut lines)?;
+    let mut keys = Vec::new();
+    collect_lines(body, None, None, &mut lines, &mut keys)?;
+    attach_localizations(&root, &keys, &mut lines);
     finalize(&mut lines, duration_ms)?;
     if prefer_translation {
         let mut translated = Vec::new();
@@ -159,6 +163,10 @@ pub fn parse_ttml_with_translation(
                     .zip(&lines)
                     .all(|(a, b)| a.begin_ms.abs_diff(b.begin_ms) <= 2000)
                 {
+                    for (replacement, original) in replacement.iter_mut().zip(&lines) {
+                        replacement.translations = original.translations.clone();
+                        replacement.pronunciations = original.pronunciations.clone();
+                    }
                     lines = replacement;
                     break;
                 }
@@ -167,16 +175,126 @@ pub fn parse_ttml_with_translation(
     }
     let timing = if lines.iter().any(|line| !line.words.is_empty()) {
         crate::domain::LyricsTiming::Word
-    } else { crate::domain::LyricsTiming::Line };
+    } else {
+        crate::domain::LyricsTiming::Line
+    };
     Ok(LyricsDocument {
         track,
         source,
         lines,
         duration_ms,
         storage: crate::domain::LyricsStorage {
-            apple_music_id: None, timing: Some(timing),
+            apple_music_id: None,
+            timing: Some(timing),
+            localization_version: 1,
         },
     })
+}
+
+fn localization_text(node: &Element) -> String {
+    let mut text = String::new();
+    for child in &node.children {
+        match child {
+            Content::Text(value)
+                if !value.contains('\n') || !value.chars().all(char::is_whitespace) =>
+            {
+                text.push_str(value)
+            }
+            Content::Element(child) if child.name == "br" => text.push('\n'),
+            Content::Element(child) => text.push_str(&localization_text(child)),
+            _ => {}
+        }
+    }
+    text
+}
+
+fn attach_localizations(root: &Element, keys: &[Option<String>], lines: &mut [LyricLine]) {
+    fn texts(
+        node: &Element,
+        language: &str,
+        output: &mut BTreeMap<String, Vec<LocalizedLyricText>>,
+    ) {
+        if node.name == "text" {
+            if let Some(key) = node.attr("for") {
+                let text = localization_text(node);
+                if !text.trim().is_empty() {
+                    let entries = output.entry(key.to_owned()).or_default();
+                    if !entries.iter().any(|entry| entry.language == language) {
+                        // 注音不能为未标记的正文片段补造时间。部分时标损坏时仍保留整行文本。
+                        let mut parts = Vec::new();
+                        let fully_timed = fragments(node, None, false, &mut parts).is_ok()
+                            && parts.iter().any(|part| part.time.is_some())
+                            && parts
+                                .iter()
+                                .all(|part| part.time.is_some() || part.text.trim().is_empty());
+                        let words = if fully_timed {
+                            parse_line(node, None, None)
+                                .ok()
+                                .flatten()
+                                .filter(|line| {
+                                    line.words
+                                        .iter()
+                                        .map(|word| word.text.as_str())
+                                        .collect::<String>()
+                                        == text
+                                })
+                                .map(|line| line.words)
+                                .unwrap_or_default()
+                        } else {
+                            Vec::new()
+                        };
+                        entries.push(LocalizedLyricText {
+                            language: language.into(),
+                            text,
+                            words,
+                        });
+                    }
+                }
+            }
+            return;
+        }
+        for child in &node.children {
+            if let Content::Element(child) = child {
+                texts(child, language, output);
+            }
+        }
+    }
+    fn visit(
+        node: &Element,
+        translated: &mut BTreeMap<String, Vec<LocalizedLyricText>>,
+        pronounced: &mut BTreeMap<String, Vec<LocalizedLyricText>>,
+    ) {
+        // 正文中的文字不参与元数据收集，replacement 也不是辅助翻译。
+        if node.name == "body" {
+            return;
+        }
+        if node.name == "translation" && matches!(node.attr("type"), None | Some("subtitle")) {
+            texts(node, node.attr("lang").unwrap_or("und"), translated);
+            return;
+        }
+        if node.name == "transliteration" {
+            texts(node, node.attr("lang").unwrap_or("und"), pronounced);
+            return;
+        }
+        for child in &node.children {
+            if let Content::Element(child) = child {
+                visit(child, translated, pronounced);
+            }
+        }
+    }
+    let mut translated = BTreeMap::new();
+    let mut pronounced = BTreeMap::new();
+    visit(root, &mut translated, &mut pronounced);
+    for (line, key) in lines.iter_mut().zip(keys) {
+        if let Some(key) = key {
+            line.translations = translated.get(key).cloned().unwrap_or_default();
+            line.pronunciations = pronounced.get(key).cloned().unwrap_or_default();
+            line.translations
+                .sort_by(|a, b| a.language.cmp(&b.language));
+            line.pronunciations
+                .sort_by(|a, b| a.language.cmp(&b.language));
+        }
+    }
 }
 fn collect_translations<'a>(node: &'a Element, output: &mut Vec<&'a Element>) {
     if node.name == "translation"
@@ -213,6 +331,7 @@ fn collect_lines(
     parent_begin: Option<u64>,
     parent_end: Option<u64>,
     output: &mut Vec<LyricLine>,
+    keys: &mut Vec<Option<String>>,
 ) -> ParseResult<()> {
     let begin = node.time("begin")?.or(parent_begin);
     let end = node.time("end")?.or(parent_end);
@@ -221,9 +340,15 @@ fn collect_lines(
             if child.name == "p" {
                 if let Some(line) = parse_line(child, begin, end)? {
                     output.push(line);
+                    keys.push(
+                        child
+                            .attr("key")
+                            .or_else(|| child.attr("id"))
+                            .map(str::to_owned),
+                    );
                 }
             } else {
-                collect_lines(child, begin, end, output)?;
+                collect_lines(child, begin, end, output, keys)?;
             }
         }
     }
@@ -341,6 +466,8 @@ fn parse_line(
         }
     }
     Ok(Some(LyricLine {
+        translations: Vec::new(),
+        pronunciations: Vec::new(),
         begin_ms: begin,
         end_ms: end,
         words,
@@ -400,6 +527,79 @@ fn parse_time(value: &str) -> Option<u64> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn localizations_follow_line_keys_across_sorting_and_overlapping_lines() {
+        let xml = r#"<tt xmlns:itunes="urn:itunes"><head><metadata>
+          <translation type="subtitle" xml:lang="zh-Hans"><text for="B">第二行</text><text for="A">第一行</text><text for="missing">不应出现</text></translation>
+          <translation type="subtitle" xml:lang="en"><text for="A">First</text></translation>
+          <translation type="replacement" xml:lang="zh-Hans"><text for="A">不可作为辅助字幕</text></translation>
+          <transliteration xml:lang="zh-Latn-pinyin"><text for="A"><span begin="1s" end="2s">dì </span><span begin="2s" end="4s">yī</span></text><text for="B">dì èr</text></transliteration>
+        </metadata></head><body dur="9s">
+          <p itunes:key="B" begin="2s" end="5s">Beta</p>
+          <p itunes:key="A" begin="1s" end="4s"><span begin="1s" end="2s">Al</span><span begin="2s" end="4s">pha</span></p>
+          <p begin="6s" end="8s">No key</p>
+        </body></tt>"#;
+        let doc = parse_ttml(TrackIdentity::default(), LyricsSource::AppleMusicCache, xml).unwrap();
+        assert_eq!(doc.lines[0].text, "Alpha");
+        assert_eq!(
+            doc.lines[0]
+                .translations
+                .iter()
+                .map(|item| item.text.as_str())
+                .collect::<Vec<_>>(),
+            vec!["First", "第一行"]
+        );
+        assert_eq!(doc.lines[1].translations[0].text, "第二行");
+        assert_eq!(doc.lines[0].pronunciations[0].text, "dì yī");
+        assert_eq!(doc.lines[0].pronunciations[0].words[1].begin_ms, 2000);
+        assert_eq!(doc.lines[0].pronunciations[0].words[1].end_ms, 4000);
+        assert!(doc.lines[1].pronunciations[0].words.is_empty());
+        assert!(doc.lines[2].translations.is_empty());
+        assert!(doc.lines[2].pronunciations.is_empty());
+        assert_eq!(doc.lines[0].end_ms, Some(4000));
+        assert_eq!(doc.lines[1].begin_ms, 2000);
+    }
+
+    #[test]
+    fn broken_or_partial_pronunciation_timing_falls_back_to_its_line_text() {
+        for content in [
+            r#"<span begin="3s" end="2s">broken</span>"#,
+            r#"<span begin="NaNs" end="2s">broken</span>"#,
+            r#"<span begin="1s" end="2s">part</span> untimed"#,
+        ] {
+            let xml = format!(
+                r#"<tt xmlns:itunes="urn:i"><head><metadata><transliteration xml:lang="en-Latn"><text for="A">{content}</text></transliteration></metadata></head><body><p itunes:key="A" begin="1s" end="4s">Original</p></body></tt>"#
+            );
+            let doc =
+                parse_ttml(TrackIdentity::default(), LyricsSource::AppleMusicApi, &xml).unwrap();
+            assert_eq!(doc.lines[0].text, "Original");
+            assert_eq!(doc.lines[0].pronunciations.len(), 1);
+            assert!(!doc.lines[0].pronunciations[0].text.is_empty());
+            assert!(doc.lines[0].pronunciations[0].words.is_empty());
+        }
+    }
+
+    #[test]
+    fn translation_line_breaks_entities_and_empty_records_are_handled() {
+        let xml = r#"<tt xmlns:itunes="urn:i"><head><metadata><translation type="subtitle" xml:lang="zh-Hans"><text for="A">你 &amp; 我<br/>一起走</text><text for="B">   </text><text>无关联</text></translation></metadata></head><body><p itunes:key="A" begin="1s" end="3s">A</p><p itunes:key="B" begin="3s" end="5s">B</p></body></tt>"#;
+        let doc = parse_ttml(TrackIdentity::default(), LyricsSource::AppleMusicCache, xml).unwrap();
+        assert_eq!(doc.lines[0].translations[0].text, "你 & 我\n一起走");
+        assert!(doc.lines[1].translations.is_empty());
+    }
+
+    #[test]
+    fn old_serialized_lines_default_to_no_auxiliary_content() {
+        let line: LyricLine = serde_json::from_value(
+            serde_json::json!({"begin_ms":1000,"end_ms":3000,"words":[],"text":"old"}),
+        )
+        .unwrap();
+        assert!(line.translations.is_empty());
+        assert!(line.pronunciations.is_empty());
+        let stored = serde_json::to_value(line).unwrap();
+        assert!(stored.get("translations").is_none());
+        assert!(stored.get("pronunciations").is_none());
+    }
 
     #[test]
     fn preserves_spaces_mixed_text_and_child_word_timing() {

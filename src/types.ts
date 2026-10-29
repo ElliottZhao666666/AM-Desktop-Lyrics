@@ -20,14 +20,19 @@ export interface LyricLine {
   end_ms: number | null;
   words: LyricWord[];
   text: string;
+  translations?: LocalizedLyricText[];
+  pronunciations?: LocalizedLyricText[];
 }
+
+export interface LocalizedLyricText { language: string; text: string; words?: LyricWord[] }
+export type LyricsAuxiliaryMode = 'off' | 'translation' | 'pronunciation';
 
 export interface LyricsDocument {
   track: TrackIdentity;
   source: LyricsSource;
   lines: LyricLine[];
   duration_ms: number | null;
-  storage?: { apple_music_id: string | null; timing: LyricsTiming | null };
+  storage?: { apple_music_id: string | null; timing: LyricsTiming | null; localization_version?: number };
 }
 
 export type LyricsTiming = 'word' | 'line';
@@ -39,6 +44,8 @@ export interface LyricsPoolEntry {
   track: TrackIdentity;
   appleMusicId: string | null;
   timing: LyricsTiming;
+  hasTranslation?: boolean;
+  hasPronunciation?: boolean;
 }
 export interface LyricsPoolDetail {
   entry: LyricsPoolEntry;
@@ -100,6 +107,8 @@ export interface RuntimeLyricsTimeOffset {
 export interface AppSettings {
   autoConvertTraditionalToSimplified: boolean;
   localCacheLimit: number;
+  lyricsMaxRetries: number;
+  lyricsAuxiliaryPreference: LyricsAuxiliaryMode;
   themeName: string;
   themeCss: string;
   themeEditor?: ThemeEditor | null;
@@ -137,6 +146,12 @@ export interface LyricsSourceConfig {
 export interface AmApiTokens {
   authToken: string;
   mediaUserToken: string;
+}
+
+export interface DeveloperTokenExpiry {
+  expiresAt: string;
+  expired: boolean;
+  remainingSeconds: number;
 }
 
 export interface AppConfig {

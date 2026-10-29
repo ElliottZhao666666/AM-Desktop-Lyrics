@@ -1,7 +1,7 @@
 {
   "name": "amdl",
   "private": true,
-  "version": "1.0.1",
+  "version": "1.0.2",
   "author": "月半菌",
   "homepage": "https://amdl.ybjun.com",
   "type": "module",
@@ -11,6 +11,7 @@
     "preview": "vite preview",
     "site:build": "node scripts/build-site.mjs",
     "site:check": "node scripts/build-site.mjs --check",
+    "site:package": "pnpm site:check && node scripts/package-site.mjs",
     "tauri": "tauri",
     "tauri:build:signed": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/build-signed.ps1"
   },

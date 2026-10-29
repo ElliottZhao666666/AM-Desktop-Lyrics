@@ -193,7 +193,9 @@ pub async fn fetch_lyrics_by_song(
         duration_ms: candidate.duration_ms,
         lines,
         storage: crate::domain::LyricsStorage {
-            apple_music_id: None, timing: Some(crate::domain::LyricsTiming::Line),
+            apple_music_id: None,
+            timing: Some(crate::domain::LyricsTiming::Line),
+            localization_version: 1,
         },
     }))
 }
