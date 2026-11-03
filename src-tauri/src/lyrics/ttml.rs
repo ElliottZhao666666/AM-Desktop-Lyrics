@@ -186,7 +186,7 @@ pub fn parse_ttml_with_translation(
         storage: crate::domain::LyricsStorage {
             apple_music_id: None,
             timing: Some(timing),
-            localization_version: 1,
+            localization_version: crate::domain::LYRICS_LOCALIZATION_VERSION,
         },
     })
 }

@@ -168,7 +168,7 @@ pub async fn upgrade_cached_document(
     duration_ms: u64,
 ) -> Option<LyricsDocument> {
     if document.source != LyricsSource::AppleMusicCache
-        || (document.storage.localization_version > 0
+        || (document.storage.localization_version >= crate::domain::LYRICS_LOCALIZATION_VERSION
             && document.lines.iter().any(|line| !line.words.is_empty()))
     {
         return None;
@@ -186,7 +186,9 @@ pub async fn upgrade_cached_document(
         .lines
         .iter()
         .any(|line| !line.words.is_empty());
-    ((!old_word || new_word) && (document.storage.localization_version == 0 || new_word))
+    ((!old_word || new_word)
+        && (document.storage.localization_version < crate::domain::LYRICS_LOCALIZATION_VERSION
+            || new_word))
         .then_some(cached.document)
 }
 

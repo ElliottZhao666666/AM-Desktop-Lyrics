@@ -180,8 +180,13 @@ function setAuxiliaryEnabled(change: { mode: Exclude<LyricsAuxiliaryMode, 'off'>
     sessionTranslationEnabled.value = false;
     sessionPronunciationEnabled.value = false;
   }
-  if (change.mode === 'translation') sessionTranslationEnabled.value = change.enabled;
-  else sessionPronunciationEnabled.value = change.enabled;
+  if (change.mode === 'translation') {
+    sessionTranslationEnabled.value = change.enabled;
+    if (change.enabled) sessionPronunciationEnabled.value = false;
+  } else {
+    sessionPronunciationEnabled.value = change.enabled;
+    if (change.enabled) sessionTranslationEnabled.value = false;
+  }
 }
 
 function applySettings(settings: AppSettings) {
@@ -198,12 +203,12 @@ function applyLyricsTimeOffset(payload: RuntimeLyricsTimeOffset) {
 }
 
 function applyAuthoritativePosition(payload: MediaPositionPayload) {
-  if (payload.track_revision !== currentTrackRevision || payload.revision <= lastPositionRevision) return;
+  if (payload.track_revision !== currentTrackRevision || payload.revision <= lastPositionRevision || payload.revision < lastMediaRevision) return;
   lastPositionRevision = payload.revision;
   const now = performance.now();
   durationMs.value = payload.duration_ms;
   // Rust 的位置是在发出事件时估算的，补偿 IPC 排队时间；逐帧推进仍用 performance.now。
-  const age = payload.sampled_at_ms ? Math.max(0, Math.min(2000, Date.now() - payload.sampled_at_ms)) : 0;
+  const age = payload.sampled_at_ms ? Math.max(0, Date.now() - payload.sampled_at_ms) : 0;
   const rate = Number.isFinite(payload.playback_rate) ? payload.playback_rate : 1;
   const reanchor = payload.discontinuity || (payload.timeline_revision !== undefined && payload.timeline_revision !== lastTimelineRevision);
   if (payload.timeline_revision !== undefined) lastTimelineRevision = payload.timeline_revision;

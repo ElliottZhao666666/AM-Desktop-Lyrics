@@ -1,6 +1,6 @@
 [package]
 name = "amdl"
-version = "1.0.2"
+version = "1.0.3"
 description = "Apple Music Desktop Lyrics"
 authors = ["月半菌"]
 homepage = "https://amdl.ybjun.com"

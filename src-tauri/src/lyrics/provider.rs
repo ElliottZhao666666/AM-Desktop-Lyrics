@@ -263,7 +263,10 @@ async fn fetch_document(
                 Err(error) => eprintln!("[CustomLyrics] 读取失败，继续自动匹配: {error}"),
             }
         }
-        if let Some(document) = local_cache_get(track, &config, duration_ms) {
+        if let Some(document) = use_automatic_cache
+            .then(|| local_cache_get(track, &config, duration_ms))
+            .flatten()
+        {
             // 保存渠道/Token 后重新按优先级获取；手动选择仍作为用户明确的覆盖结果。
             if use_automatic_cache || document.source == crate::domain::LyricsSource::Manual {
                 if let Some(upgraded) = cache::upgrade_cached_document(&document, duration_ms).await
@@ -275,7 +278,8 @@ async fn fetch_document(
                     document.source,
                     crate::domain::LyricsSource::AppleMusicApi
                         | crate::domain::LyricsSource::AppleMusicCache
-                ) && document.storage.localization_version == 0
+                ) && document.storage.localization_version
+                    < crate::domain::LYRICS_LOCALIZATION_VERSION
                 {
                     println!("[歌词][请求{request_id}] 旧版 Apple 缓存尚未解析辅助内容，尝试更新并保留离线回退");
                     legacy_cache = Some(document);
@@ -402,26 +406,69 @@ fn parse_apple_music_api(
     body: &str,
     auto_chs: bool,
 ) -> Result<Option<LyricsDocument>, String> {
-    let Some(ttml) = extract_ttml(body) else {
-        return Ok(None);
-    };
-    if crate::lyrics::cache_scanner::body_duration_ms(&ttml)
-        .zip(candidate.duration_ms)
-        .is_some_and(|(lyric_duration, song_duration)| {
-            !crate::lyrics::cache_scanner::timeline_fits_track(lyric_duration, song_duration)
-        })
-    {
-        return Err("逐字歌词响应与已核验歌曲时长不符".into());
+    let mut parsed = Vec::new();
+    let mut duration_mismatch = false;
+    for ttml in extract_ttml_variants(body) {
+        if crate::lyrics::cache_scanner::body_duration_ms(&ttml)
+            .zip(candidate.duration_ms)
+            .is_some_and(|(lyrics, song)| {
+                !crate::lyrics::cache_scanner::timeline_fits_track(lyrics, song)
+            })
+        {
+            duration_mismatch = true;
+            continue;
+        }
+        if let Ok(raw) = crate::lyrics::ttml::parse_ttml(
+            track.clone(),
+            crate::domain::LyricsSource::AppleMusicApi,
+            &ttml,
+        ) {
+            parsed.push((ttml, raw));
+        }
+    }
+    if parsed.is_empty() {
+        return if duration_mismatch {
+            Err("逐字歌词响应与已核验歌曲时长不符".into())
+        } else {
+            Ok(None)
+        };
+    }
+    let mut primary = 0;
+    for index in 1..parsed.len() {
+        if same_main_timeline(&parsed[0].1, &parsed[index].1)
+            && parsed[index]
+                .1
+                .lines
+                .iter()
+                .any(|line| !line.words.is_empty())
+            && parsed[primary]
+                .1
+                .lines
+                .iter()
+                .all(|line| line.words.is_empty())
+        {
+            primary = index;
+        }
     }
     let mut document = crate::lyrics::ttml::parse_ttml_with_translation(
         track.clone(),
         crate::domain::LyricsSource::AppleMusicApi,
-        &ttml,
+        &parsed[primary].0,
         auto_chs,
     )
     .map_err(|error| error.to_string())?;
     if document.lines.is_empty() {
         return Ok(None);
+    }
+    for (_, other) in &parsed {
+        // 只能补充同一份主句时间轴的辅助信息，不拼接不同歌曲或不同剪辑版本。
+        if !same_main_timeline(&parsed[primary].1, other) {
+            continue;
+        }
+        for (line, extra) in document.lines.iter_mut().zip(&other.lines) {
+            merge_localized_text(&mut line.translations, &extra.translations);
+            merge_localized_text(&mut line.pronunciations, &extra.pronunciations);
+        }
     }
     document.duration_ms = candidate
         .duration_ms
@@ -429,6 +476,34 @@ fn parse_apple_music_api(
         .or(document.duration_ms);
     document.storage.apple_music_id = Some(candidate.id.clone());
     Ok(Some(document))
+}
+
+fn same_main_timeline(left: &LyricsDocument, right: &LyricsDocument) -> bool {
+    left.lines.len() == right.lines.len()
+        && left
+            .lines
+            .iter()
+            .zip(&right.lines)
+            .all(|(a, b)| a.begin_ms == b.begin_ms && a.end_ms == b.end_ms && a.text == b.text)
+}
+
+fn merge_localized_text(
+    target: &mut Vec<crate::domain::LocalizedLyricText>,
+    extra: &[crate::domain::LocalizedLyricText],
+) {
+    for value in extra {
+        match target
+            .iter_mut()
+            .find(|entry| entry.language == value.language)
+        {
+            Some(existing) if existing.text == value.text && existing.words.is_empty() => {
+                existing.words = value.words.clone()
+            }
+            Some(_) => {}
+            None => target.push(value.clone()),
+        }
+    }
+    target.sort_by(|a, b| a.language.cmp(&b.language));
 }
 
 fn source_name(source: &crate::domain::LyricsSource) -> &'static str {
@@ -451,7 +526,12 @@ fn brief_error(error: &str) -> String {
     text.replace(['\r', '\n'], " ")
 }
 
+#[cfg(test)]
 fn extract_ttml(body: &str) -> Option<String> {
+    extract_ttml_variants(body).into_iter().next()
+}
+
+fn extract_ttml_variants(body: &str) -> Vec<String> {
     fn visit<'a>(value: &'a serde_json::Value, priority: u8, candidates: &mut Vec<(u8, &'a str)>) {
         match value {
             serde_json::Value::String(text) if text.contains("<tt") && text.contains("body") => {
@@ -478,19 +558,28 @@ fn extract_ttml(body: &str) -> Option<String> {
             _ => {}
         }
     }
-    let value = serde_json::from_str(body).ok()?;
+    let Ok(value) = serde_json::from_str(body) else {
+        return Vec::new();
+    };
     let mut candidates = Vec::new();
     visit(&value, 0, &mut candidates);
     candidates.sort_by_key(|(priority, _)| std::cmp::Reverse(*priority));
-    candidates.into_iter().find_map(|(_, text)| {
-        crate::lyrics::ttml::parse_ttml(
-            TrackIdentity::default(),
-            crate::domain::LyricsSource::AppleMusicApi,
-            text,
-        )
-        .is_ok_and(|document| !document.lines.is_empty())
-        .then(|| text.to_owned())
-    })
+    let mut seen = std::collections::BTreeSet::new();
+    candidates
+        .into_iter()
+        .filter_map(|(_, text)| {
+            if !seen.insert(text) {
+                return None;
+            }
+            crate::lyrics::ttml::parse_ttml(
+                TrackIdentity::default(),
+                crate::domain::LyricsSource::AppleMusicApi,
+                text,
+            )
+            .is_ok_and(|document| !document.lines.is_empty())
+            .then(|| text.to_owned())
+        })
+        .collect()
 }
 
 fn publish_status(
@@ -706,7 +795,7 @@ pub async fn refetch_lyrics(
         "[歌词][请求{}] 手动重新获取，范围={source:?}",
         token.generation
     );
-    // 主按钮复用切歌流程，强制开启新请求，但仍允许命中两个歌词池。
+    // 手动重新获取跳过软件缓存池；明确指定的手动匹配池仍按渠道配置生效。
     // 指定渠道时 fetch_document 跳过两个池，只走对应来源及其身份核验。
     let result = tokio::time::timeout(
         Duration::from_secs(90),
@@ -714,7 +803,7 @@ pub async fn refetch_lyrics(
             &track,
             duration,
             SystemTime::now(),
-            true,
+            false,
             token.generation,
             source,
         ),
@@ -1159,6 +1248,105 @@ mod tests {
     }
 
     #[test]
+    fn api_localization_variants_merge_only_matching_main_timelines() {
+        let track = TrackIdentity {
+            title: "test".into(),
+            artist: "test".into(),
+            album: None,
+        };
+        let candidate = crate::lyrics::am_api::CatalogSong {
+            id: "1".into(),
+            track: track.clone(),
+            duration_ms: Some(10000),
+            search_rank: None,
+        };
+        let line = "<p itunes:key=\"L1\" begin=\"1s\" end=\"4s\">hello world</p>";
+        let words = "<p itunes:key=\"L1\" begin=\"1s\" end=\"4s\"><span begin=\"1s\" end=\"2s\">hello </span><span begin=\"2s\" end=\"4s\">world</span></p>";
+        let xml = |head: &str, body: &str| {
+            format!("<tt xmlns:itunes=\"urn:itunes\"><head>{head}</head><body dur=\"10s\">{body}</body></tt>")
+        };
+        let translation = xml("<translation type=\"subtitle\" xml:lang=\"zh-Hans\"><text for=\"L1\">译文</text></translation>", line);
+        let pronunciation = xml("<transliteration xml:lang=\"ja-Latn\"><text for=\"L1\">pronunciation</text></transliteration>", words);
+        let wrong = xml("<translation type=\"subtitle\" xml:lang=\"en-US\"><text for=\"L1\">unrelated</text></translation>", &line.replace("hello world", "different words"));
+        let responses: Vec<_> = [translation, pronunciation, wrong]
+            .into_iter()
+            .map(|text| serde_json::json!({"data":[{"attributes":{"ttmlLocalizations":text}}]}))
+            .collect();
+        let document = parse_apple_music_api(
+            &track,
+            &candidate,
+            &serde_json::json!({"amdlResponses":responses}).to_string(),
+            false,
+        )
+        .unwrap()
+        .unwrap();
+        assert_eq!(document.lines[0].words.len(), 2);
+        assert_eq!(document.lines[0].translations.len(), 1);
+        assert_eq!(document.lines[0].translations[0].language, "zh-Hans");
+        assert_eq!(document.lines[0].pronunciations.len(), 1);
+        assert_eq!(
+            document.storage.localization_version,
+            crate::domain::LYRICS_LOCALIZATION_VERSION
+        );
+    }
+
+    #[test]
+    #[ignore = "只读验证 Mind Brand 样本的 API 语言回退、双辅助标签及存储结果；AMDL_MIND_BRAND_SAMPLES/OUTPUT"]
+    fn saved_mind_brand_samples_keep_translation_and_pronunciation_together() {
+        let root =
+            std::path::PathBuf::from(std::env::var_os("AMDL_MIND_BRAND_SAMPLES").expect("samples"));
+        let initial: serde_json::Value =
+            serde_json::from_slice(&std::fs::read(root.join("api-zh.json")).unwrap()).unwrap();
+        let fallback: serde_json::Value =
+            serde_json::from_slice(&std::fs::read(root.join("api-en.json")).unwrap()).unwrap();
+        let track = TrackIdentity {
+            title: "マインドブランド".into(),
+            artist: "Maretu".into(),
+            album: Some("コインロッカーベイビー".into()),
+        };
+        let candidate = crate::lyrics::am_api::CatalogSong {
+            id: "1096588626".into(),
+            track: track.clone(),
+            duration_ms: Some(259231),
+            search_rank: None,
+        };
+        let document = parse_apple_music_api(
+            &track,
+            &candidate,
+            &serde_json::json!({"amdlResponses":[initial,fallback]}).to_string(),
+            false,
+        )
+        .unwrap()
+        .unwrap();
+        assert_eq!(document.lines.len(), 44);
+        assert_eq!(
+            document
+                .lines
+                .iter()
+                .filter(|line| !line.translations.is_empty())
+                .count(),
+            44
+        );
+        assert_eq!(
+            document
+                .lines
+                .iter()
+                .filter(|line| !line.pronunciations.is_empty())
+                .count(),
+            44
+        );
+        let encoded = serde_json::to_vec(&document).unwrap();
+        assert_eq!(
+            serde_json::from_slice::<LyricsDocument>(&encoded).unwrap(),
+            document
+        );
+        if let Some(output) = std::env::var_os("AMDL_MIND_BRAND_OUTPUT") {
+            std::fs::write(output, encoded).unwrap();
+        }
+        println!("Mind Brand：44 行主句、44 行英文翻译、44 行注音，序列化往返保持完整。");
+    }
+
+    #[test]
     fn apple_api_allows_real_outro_lengths_but_rejects_overlong_lyrics() {
         let track = TrackIdentity {
             title: "Song".into(),
@@ -1339,7 +1527,7 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "需要隔离进程：使用临时 LOCALAPPDATA 验证完整重新获取读取两个歌词池，不请求网络"]
+    #[ignore = "需要隔离进程：验证自动缓存命中、手动重新获取跳过缓存及手动池保留，不请求网络"]
     fn refetch_all_restores_manual_then_recent_cache_without_network() {
         let directory =
             std::env::temp_dir().join(format!("amdl-refetch-test-{}", std::process::id()));
@@ -1379,6 +1567,50 @@ mod tests {
             .unwrap()
             .unwrap();
             assert_eq!(cached, automatic);
+            let mut config = crate::config::AppConfig::default();
+            for source in &mut config.lyrics_sources {
+                source.enabled = source.id == "manual";
+            }
+            crate::config::write_config(&config).unwrap();
+            automatic.source = crate::domain::LyricsSource::Manual;
+            write_local_cache(&[automatic.clone()]).unwrap();
+            assert!(fetch_document(
+                &automatic.track,
+                180000,
+                SystemTime::now(),
+                false,
+                3,
+                LyricsRefetchSource::All
+            )
+            .await
+            .unwrap()
+            .is_none());
+            assert!(fetch_document(
+                &manual.track,
+                180000,
+                SystemTime::now(),
+                false,
+                4,
+                LyricsRefetchSource::All
+            )
+            .await
+            .unwrap()
+            .is_some());
+            for source in &mut config.lyrics_sources {
+                source.enabled = false;
+            }
+            crate::config::write_config(&config).unwrap();
+            assert!(fetch_document(
+                &manual.track,
+                180000,
+                SystemTime::now(),
+                false,
+                5,
+                LyricsRefetchSource::All
+            )
+            .await
+            .unwrap()
+            .is_none());
         });
         std::fs::remove_dir_all(directory).unwrap();
     }

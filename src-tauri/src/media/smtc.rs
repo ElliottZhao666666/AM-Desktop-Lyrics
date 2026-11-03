@@ -199,6 +199,7 @@ struct TimelineSample {
     duration_ms: u64,
     updated_at: i64,
     rate: f64,
+    quantum_ms: u64,
 }
 fn utc_ticks() -> i64 {
     const EPOCH: i64 = 116444736000000000;
@@ -242,6 +243,8 @@ struct TimelineTracker {
     observed_ms: u64,
     playing: bool,
     timeline_revision: u64,
+    bounds: Option<(f64, f64)>,
+    awaiting_progress: bool,
 }
 impl TimelineTracker {
     fn observe(
@@ -255,12 +258,15 @@ impl TimelineTracker {
         let first = self.sample.is_none() || self.track_revision != track_revision;
         let previous = if first { None } else { self.sample };
         let elapsed = monotonic_ms.saturating_sub(self.observed_ms) as f64;
-        let predicted = self.position_ms
-            + if self.playing {
-                elapsed * previous.map_or(1.0, |sample| sample.rate)
-            } else {
-                0.0
-            };
+        let advance = if self.playing && !self.awaiting_progress {
+            elapsed * previous.map_or(1.0, |sample| sample.rate)
+        } else {
+            0.0
+        };
+        let predicted = self.position_ms + advance;
+        let projected_bounds = self
+            .bounds
+            .map(|(lower, upper)| (lower + advance, upper + advance));
         // 迟到旧快照不能重新成为权威位置，状态变化仍在当前锚点处理。
         let fresh = previous.is_none_or(|previous| {
             sample.updated_at <= 0
@@ -272,23 +278,6 @@ impl TimelineTracker {
                 previous.position_ms != sample.position_ms
                     || previous.updated_at != sample.updated_at
             });
-        let discontinuity = !first
-            && changed
-            && previous.is_some_and(|previous| {
-                let stamped = sample.updated_at > previous.updated_at && previous.updated_at > 0;
-                let elapsed = if self.playing && stamped {
-                    (sample.updated_at.saturating_sub(previous.updated_at)).max(0) as f64 / 10000.0
-                        * previous.rate
-                } else {
-                    0.0
-                };
-                let expected = if stamped {
-                    previous.position_ms as f64 + elapsed
-                } else {
-                    predicted
-                };
-                (sample.position_ms as f64 - expected).abs() > 1500.0
-            });
         let mut measured = estimate_position(sample, playing, utc_now);
         // 播放器改变 Position 却复用同一时间戳时，不能把旧时间戳的年龄再叠加。
         if changed && previous.is_some_and(|previous| previous.updated_at == sample.updated_at) {
@@ -297,11 +286,61 @@ impl TimelineTracker {
         // LastUpdatedTime 也会随其他时间轴属性刷新；Position 未变时保留连续锚点。
         let position_changed =
             previous.is_none_or(|previous| previous.position_ms != sample.position_ms);
-        self.position_ms = if first || (changed && position_changed) {
-            measured.position_ms as f64
+        // 时间戳跨度可能包含暂停时间，不能把整段跨度当作连续播放。
+        // 与排除了暂停/准备时间的单调预测比较，且单纯刷新时间戳不算跳转。
+        let discontinuity = !first
+            && changed
+            && position_changed
+            && (measured.position_ms as f64 - predicted).abs() > 1500.0;
+        let resumed = !first && playing && !self.playing;
+        let progress = changed
+            && position_changed
+            && previous.is_some_and(|old| sample.position_ms > old.position_ms);
+        let was_waiting = self.awaiting_progress;
+        self.awaiting_progress = if first || discontinuity {
+            playing && sample.position_ms == 0
+        } else if self.awaiting_progress {
+            !progress
         } else {
-            predicted
+            playing && resumed && sample.position_ms == 0 && predicted == 0.0
         };
+        let resume_anchor = playing && !self.awaiting_progress && was_waiting;
+        let reanchor = first || discontinuity || resume_anchor;
+        let half_step = sample.quantum_ms.saturating_sub(1) as f64 / 2.0;
+        let observed_bounds = (
+            (measured.position_ms as f64 - half_step).max(0.0),
+            measured.position_ms as f64 + half_step,
+        );
+        if self.awaiting_progress {
+            // Playing 可能早于音频真正启动。没有新的进度证据时不累计准备/缓冲时间。
+            self.position_ms = if first || discontinuity {
+                sample.position_ms as f64
+            } else {
+                predicted
+            };
+            self.bounds = if first || discontinuity {
+                Some((self.position_ms, self.position_ms))
+            } else {
+                projected_bounds
+            };
+        } else if reanchor {
+            self.position_ms = measured.position_ms as f64;
+            self.bounds = Some(observed_bounds);
+        } else if changed && position_changed && playing {
+            // 整秒位置是一个有量化误差的观测，不能当作精确毫秒重新建锚。
+            // 连续观测取交集，只有匀速预测超出可信区间时才纠偏。
+            let overlap = projected_bounds.and_then(|(lower, upper)| {
+                let lower = lower.max(observed_bounds.0);
+                let upper = upper.min(observed_bounds.1);
+                (lower <= upper).then_some((lower, upper))
+            });
+            let bounds = overlap.unwrap_or(observed_bounds);
+            self.position_ms = predicted.clamp(bounds.0, bounds.1);
+            self.bounds = Some(bounds);
+        } else {
+            self.position_ms = predicted;
+            self.bounds = projected_bounds;
+        }
         if fresh {
             self.sample = Some(sample);
         }
@@ -309,7 +348,7 @@ impl TimelineTracker {
         self.observed_ms = monotonic_ms;
         self.playing = playing;
         let accepted = self.sample.unwrap_or(sample);
-        if first || discontinuity {
+        if reanchor {
             self.timeline_revision += 1;
         }
         MediaPositionPayload {
@@ -319,8 +358,12 @@ impl TimelineTracker {
                 self.position_ms.round() as u64
             },
             duration_ms: accepted.duration_ms,
-            playback_rate: accepted.rate,
-            discontinuity: first || discontinuity,
+            playback_rate: if self.awaiting_progress {
+                0.0
+            } else {
+                accepted.rate
+            },
+            discontinuity: reanchor,
             timeline_revision: self.timeline_revision,
             ..measured
         }
@@ -332,15 +375,22 @@ fn read_timeline(
     let timeline = session.GetTimelineProperties()?;
     let start = timeline.StartTime()?.Duration;
     let end = timeline.EndTime()?.Duration;
+    let position_ticks = (timeline.Position()?.Duration - start).max(0) as u64;
     let rate = session
         .GetPlaybackInfo()?
         .PlaybackRate()
         .and_then(|rate| rate.Value())
         .unwrap_or(1.0);
     Ok(TimelineSample {
-        position_ms: (timeline.Position()?.Duration - start).max(0) as u64 / 10000,
+        position_ms: position_ticks / 10000,
         duration_ms: (end - start).max(0) as u64 / 10000,
         updated_at: timeline.LastUpdatedTime()?.UniversalTime,
+        // 新版 AM 的实时样本只提供整秒值；精细时间值仍保留原有毫秒精度。
+        quantum_ms: if position_ticks % 10_000_000 == 0 {
+            1000
+        } else {
+            1
+        },
         rate: if rate.is_finite() && rate >= 0.0 {
             rate
         } else {
@@ -721,6 +771,7 @@ mod tests {
             duration_ms: 200000,
             updated_at: 100000000,
             rate: 1.0,
+            quantum_ms: 1,
         };
         let mut tracker = super::TimelineTracker::default();
         assert_eq!(
@@ -767,13 +818,190 @@ mod tests {
                 .position_ms,
             12100
         );
+        let waiting = tracker.observe(sample, true, 1, 960000000, 7000);
+        assert_eq!(waiting.position_ms, 13100);
+        assert_eq!(waiting.playback_rate, 1.0);
+        let progressed = super::TimelineSample {
+            position_ms: 14100,
+            updated_at: 970000000,
+            ..sample
+        };
         assert_eq!(
             tracker
-                .observe(sample, true, 1, 960000000, 7000)
+                .observe(progressed, true, 1, 970000000, 8000)
                 .position_ms,
-            13100
+            14100
         );
     }
+    #[test]
+    fn quantized_observations_do_not_repeatedly_move_the_clock_anchor() {
+        let mut tracker = super::TimelineTracker::default();
+        let sample = super::TimelineSample {
+            position_ms: 21000,
+            duration_ms: 200000,
+            updated_at: 100000000,
+            rate: 1.0,
+            quantum_ms: 1000,
+        };
+        let first = tracker.observe(sample, true, 1, 103760000, 0);
+        assert_eq!(first.position_ms, 21376);
+        let next = super::TimelineSample {
+            position_ms: 22000,
+            updated_at: 110240000,
+            ..sample
+        };
+        assert_eq!(
+            tracker.observe(next, true, 1, 113760000, 1000).position_ms,
+            22376
+        );
+        let skipped = super::TimelineSample {
+            position_ms: 29000,
+            updated_at: 171760000,
+            ..sample
+        };
+        let correction = tracker.observe(skipped, true, 1, 173760000, 7000);
+        assert!(!correction.discontinuity);
+        assert!(correction.position_ms > 28376 && correction.position_ms < 28800);
+        let next = super::TimelineSample {
+            position_ms: 30000,
+            updated_at: 182000000,
+            ..sample
+        };
+        let after = tracker.observe(next, true, 1, 183760000, 8000);
+        assert_eq!(after.position_ms, correction.position_ms + 1000);
+    }
+
+    #[test]
+    fn buffering_waits_for_progress_and_pause_resume_preserves_the_anchor() {
+        let mut tracker = super::TimelineTracker::default();
+        let zero = super::TimelineSample {
+            position_ms: 0,
+            duration_ms: 200000,
+            updated_at: 100000000,
+            rate: 1.0,
+            quantum_ms: 1000,
+        };
+        assert_eq!(
+            tracker.observe(zero, true, 1, 100000000, 0).playback_rate,
+            0.0
+        );
+        assert_eq!(
+            tracker.observe(zero, true, 1, 130000000, 3000).position_ms,
+            0
+        );
+        let started = super::TimelineSample {
+            position_ms: 1000,
+            updated_at: 130000000,
+            ..zero
+        };
+        let ready = tracker.observe(started, true, 1, 130000000, 3000);
+        assert_eq!(ready.position_ms, 1000);
+        assert_eq!(ready.playback_rate, 1.0);
+        assert!(ready.discontinuity);
+        let paused = tracker.observe(started, false, 1, 136000000, 3600);
+        assert_eq!(paused.position_ms, 1600);
+        let resumed = tracker.observe(started, true, 1, 170000000, 7000);
+        assert_eq!(resumed.position_ms, 1600);
+        assert_eq!(resumed.playback_rate, 1.0);
+        let moving = super::TimelineSample {
+            position_ms: 2000,
+            updated_at: 175000000,
+            ..zero
+        };
+        let resumed = tracker.observe(moving, true, 1, 175000000, 7500);
+        assert_eq!(resumed.position_ms, 2100);
+        assert_eq!(resumed.playback_rate, 1.0);
+    }
+
+    #[test]
+    fn paused_timestamp_age_cannot_be_mistaken_for_a_seek_after_resume() {
+        let mut tracker = super::TimelineTracker::default();
+        let sample = super::TimelineSample {
+            position_ms: 10000,
+            duration_ms: 200000,
+            updated_at: 100000000,
+            rate: 1.0,
+            quantum_ms: 1000,
+        };
+        tracker.observe(sample, true, 1, 102500000, 0);
+        let progress = super::TimelineSample {
+            position_ms: 11000,
+            updated_at: 110240000,
+            ..sample
+        };
+        tracker.observe(progress, true, 1, 112500000, 1000);
+        assert_eq!(
+            tracker
+                .observe(progress, false, 1, 113500000, 1100)
+                .position_ms,
+            11350
+        );
+        tracker.observe(progress, false, 1, 152500000, 5000);
+        assert_eq!(
+            tracker
+                .observe(progress, true, 1, 162500000, 6000)
+                .position_ms,
+            11350
+        );
+        let next = super::TimelineSample {
+            position_ms: 12000,
+            updated_at: 172000000,
+            ..sample
+        };
+        let resumed = tracker.observe(next, true, 1, 172500000, 7000);
+        assert!(!resumed.discontinuity);
+        assert_eq!(resumed.position_ms, 12350);
+    }
+
+    #[test]
+    #[ignore = "只读回放本地时间轴样本，无需 Apple Music；AMDL_TIMELINE_REPLAY_INPUT/OUTPUT"]
+    fn replay_saved_timeline_samples_without_live_session() {
+        let input = std::env::var_os("AMDL_TIMELINE_REPLAY_INPUT").expect("input");
+        let output = std::env::var_os("AMDL_TIMELINE_REPLAY_OUTPUT").expect("output");
+        let rows: Vec<serde_json::Value> =
+            serde_json::from_slice(&std::fs::read(input).unwrap()).unwrap();
+        let mut tracker = super::TimelineTracker::default();
+        let mut previous: Option<(u64, u64, bool, f64)> = None;
+        let mut result = Vec::new();
+        for mut row in rows {
+            let elapsed = row["elapsed_ms"].as_u64().unwrap();
+            let playing = row["playing"].as_bool().unwrap();
+            let sample = super::TimelineSample {
+                position_ms: row["raw_ms"].as_u64().unwrap(),
+                duration_ms: 1000000,
+                updated_at: row["updated_at_ticks"].as_str().unwrap().parse().unwrap(),
+                rate: row["rate"].as_f64().unwrap(),
+                quantum_ms: if row["raw_ms"].as_u64().unwrap() % 1000 == 0 {
+                    1000
+                } else {
+                    1
+                },
+            };
+            let utc_now = sample.updated_at + row["sample_age_ms"].as_i64().unwrap() * 10000;
+            let payload = tracker.observe(sample, playing, 1, utc_now, elapsed);
+            row["estimate_ms"] = payload.position_ms.into();
+            row["rate"] = payload.playback_rate.into();
+            row["discontinuity"] = payload.discontinuity.into();
+            row["timeline_revision"] = payload.timeline_revision.into();
+            row["correction_ms"] = previous
+                .map(|(time, position, was_playing, rate)| {
+                    payload.position_ms as f64
+                        - position as f64
+                        - if was_playing {
+                            (elapsed - time) as f64 * rate
+                        } else {
+                            0.0
+                        }
+                })
+                .unwrap_or(0.0)
+                .into();
+            previous = Some((elapsed, payload.position_ms, playing, payload.playback_rate));
+            result.push(row);
+        }
+        std::fs::write(output, serde_json::to_vec_pretty(&result).unwrap()).unwrap();
+        println!("已回放 {} 条本地样本", result.len());
+    }
+
     #[test]
     fn fresh_seek_is_marked_but_quantization_and_late_samples_are_not() {
         let sample = super::TimelineSample {
@@ -781,6 +1009,7 @@ mod tests {
             duration_ms: 200000,
             updated_at: 100000000,
             rate: 1.0,
+            quantum_ms: 1,
         };
         let mut tracker = super::TimelineTracker::default();
         tracker.observe(sample, true, 1, 100000000, 0);
@@ -819,6 +1048,7 @@ mod tests {
             duration_ms: 200000,
             updated_at: 100000000,
             rate: 1.0,
+            quantum_ms: 1,
         };
         let mut tracker = super::TimelineTracker::default();
         assert_eq!(
@@ -854,23 +1084,55 @@ mod tests {
             .expect("需要打开 Apple Music");
         let origin = std::time::Instant::now();
         let mut tracker = super::TimelineTracker::default();
-        for _ in 0..12 {
+        let samples = std::env::var("AMDL_TIMELINE_SAMPLES")
+            .ok()
+            .and_then(|value| value.parse::<usize>().ok())
+            .unwrap_or(12)
+            .clamp(2, 2000);
+        let interval = std::env::var("AMDL_TIMELINE_INTERVAL_MS")
+            .ok()
+            .and_then(|value| value.parse::<u64>().ok())
+            .unwrap_or(500)
+            .clamp(25, 1000);
+        let mut trace = Vec::with_capacity(samples);
+        let mut previous: Option<(super::TimelineSample, bool, u64, u64)> = None;
+        let media = super::read_media_state(&session).unwrap();
+        println!(
+            "[时间轴采样] track={:?}, samples={samples}, interval={interval}ms",
+            media.track
+        );
+        for index in 0..samples {
             let sample = super::read_timeline(&session).unwrap();
-            let playing = super::read_media_state(&session).unwrap().playback_state
-                == crate::domain::PlaybackState::Playing;
+            let playing = session.GetPlaybackInfo().unwrap().PlaybackStatus().unwrap()
+                == windows::Media::Control::GlobalSystemMediaTransportControlsSessionPlaybackStatus::Playing;
             let now = super::utc_ticks();
-            let position =
-                tracker.observe(sample, playing, 1, now, origin.elapsed().as_millis() as u64);
-            println!(
-                "[时间轴] raw={}ms age={}ms playing={} rate={} estimate={}ms seek={}",
-                sample.position_ms,
-                now.saturating_sub(sample.updated_at) / 10000,
-                playing,
-                sample.rate,
-                position.position_ms,
-                position.discontinuity
-            );
-            std::thread::sleep(std::time::Duration::from_millis(500));
+            let elapsed_ms = origin.elapsed().as_millis() as u64;
+            let position = tracker.observe(sample, playing, 1, now, elapsed_ms);
+            let correction = previous
+                .map(|(old, was_playing, old_elapsed, old_position)| {
+                    position.position_ms as f64
+                        - old_position as f64
+                        - if was_playing {
+                            (elapsed_ms - old_elapsed) as f64 * old.rate
+                        } else {
+                            0.0
+                        }
+                })
+                .unwrap_or(0.0);
+            let row = serde_json::json!({"elapsed_ms":elapsed_ms,"raw_ms":sample.position_ms,"updated_at_ticks":sample.updated_at.to_string(),"sample_age_ms":now.saturating_sub(sample.updated_at)/10000,"playing":playing,"rate":sample.rate,"estimate_ms":position.position_ms,"correction_ms":correction,"discontinuity":position.discontinuity,"timeline_revision":position.timeline_revision});
+            if previous
+                .is_none_or(|(old, old_playing, _, _)| old != sample || old_playing != playing)
+                || index + 1 == samples
+            {
+                println!("[时间轴] {row}");
+            }
+            trace.push(row);
+            previous = Some((sample, playing, elapsed_ms, position.position_ms));
+            std::thread::sleep(std::time::Duration::from_millis(interval));
+        }
+        if let Some(file) = std::env::var_os("AMDL_TIMELINE_TRACE_FILE") {
+            std::fs::write(file, serde_json::to_vec_pretty(&trace).unwrap()).unwrap();
+            println!("[时间轴采样] 已保存 {} 条完整样本", trace.len());
         }
     }
 
@@ -1054,6 +1316,7 @@ mod tests {
             duration_ms: 200000,
             updated_at: 100000000,
             rate: 1.0,
+            quantum_ms: 1,
         };
         assert_eq!(
             super::estimate_position(sample, true, 110000000).position_ms,

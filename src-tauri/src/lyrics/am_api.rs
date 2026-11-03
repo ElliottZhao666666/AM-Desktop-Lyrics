@@ -376,33 +376,84 @@ pub async fn fetch_syllable_lyrics(
     if !status.is_success() {
         return Err(format!("Apple Music API 返回 HTTP {status}: {body}").into());
     }
-    if let Some(script) = pronunciation_script(&body) {
-        // 中文拼音已由首个请求覆盖；其它原文语言按其语言码请求拉丁转写。
-        // 不支持的脚本或临时网络错误不会丢弃首个响应中的正文及翻译。
-        let localized_url = url.replace("l[script]=zh-Latn", &format!("l[script]={script}"));
-        if let Ok(response) = authorize(client.get(localized_url), &tokens).send().await {
-            if response.status().is_success() {
-                if let Ok(localized) = response.text().await {
-                    if serde_json::from_str::<serde_json::Value>(&localized)
-                        .ok()
-                        .and_then(|value| {
-                            value
-                                .pointer("/data/0/attributes/ttmlLocalizations")
-                                .and_then(serde_json::Value::as_str)
-                                .map(|xml| xml.contains("<body"))
-                        })
-                        == Some(true)
-                    {
-                        return Ok(localized);
-                    }
-                }
-            }
-        }
+    let Some(document) = response_document(&body) else {
+        return Ok(body);
+    };
+    let script = pronunciation_script(&body);
+    let has_pronunciation = document
+        .lines
+        .iter()
+        .any(|line| !line.pronunciations.is_empty());
+    let has_translation = document
+        .lines
+        .iter()
+        .any(|line| !line.translations.is_empty());
+    let script_url = script
+        .as_ref()
+        .filter(|_| !has_pronunciation)
+        .map(|script| url.replace("l[script]=zh-Latn", &format!("l[script]={script}")));
+    // 有些歌曲没有中文翻译，但有英文翻译；不能把“中文不可用”当作“没有翻译”。
+    let translation_url = (!has_translation
+        && source_language(&body).is_some_and(|language| language != "en"))
+    .then(|| {
+        url.replace("l[lyrics]=zh-hans-cn", "l[lyrics]=en-US")
+            .replace(
+                "l[script]=zh-Latn",
+                &format!("l[script]={}", script.as_deref().unwrap_or("zh-Latn")),
+            )
+    });
+    let (pronunciation, translation) = futures_util::future::join(
+        optional_localization(&client, script_url, &tokens),
+        optional_localization(&client, translation_url, &tokens),
+    )
+    .await;
+    let mut responses = vec![serde_json::from_str::<serde_json::Value>(&body)?];
+    for response in [pronunciation, translation].into_iter().flatten() {
+        responses.push(response);
     }
-    Ok(body)
+    // 保留所有响应，交给共同解析入口核对主句时间轴后合并，避免后一次请求覆盖前一次内容。
+    if responses.len() == 1 {
+        Ok(body)
+    } else {
+        Ok(serde_json::json!({"amdlResponses":responses}).to_string())
+    }
 }
 
 fn pronunciation_script(body: &str) -> Option<String> {
+    let language = source_language(body)?;
+    (!matches!(language.as_str(), "zh" | "en")).then(|| format!("{language}-Latn"))
+}
+
+async fn optional_localization(
+    client: &reqwest::Client,
+    url: Option<String>,
+    tokens: &AmApiTokens,
+) -> Option<serde_json::Value> {
+    let response = authorize(client.get(url?), tokens).send().await.ok()?;
+    if !response.status().is_success() {
+        return None;
+    }
+    let text = response.text().await.ok()?;
+    response_document(&text)?;
+    serde_json::from_str(&text).ok()
+}
+
+fn response_document(body: &str) -> Option<crate::domain::LyricsDocument> {
+    let value: serde_json::Value = serde_json::from_str(body).ok()?;
+    let attributes = value.pointer("/data/0/attributes")?;
+    ["ttmlLocalizations", "ttml"].iter().find_map(|key| {
+        let xml = attributes.get(*key)?.as_str()?;
+        let document = super::ttml::parse_ttml(
+            TrackIdentity::default(),
+            crate::domain::LyricsSource::AppleMusicApi,
+            xml,
+        )
+        .ok()?;
+        (!document.lines.is_empty()).then_some(document)
+    })
+}
+
+fn source_language(body: &str) -> Option<String> {
     let value: serde_json::Value = serde_json::from_str(body).ok()?;
     let attributes = value.pointer("/data/0/attributes")?;
     let xml = attributes
@@ -420,9 +471,8 @@ fn pronunciation_script(body: &str) -> Option<String> {
                         let value = attribute.decode_and_unescape_value(reader.decoder()).ok()?;
                         let language = value.split('-').next()?.to_ascii_lowercase();
                         return (language.len() == 2
-                            && language.bytes().all(|byte| byte.is_ascii_alphabetic())
-                            && !matches!(language.as_str(), "zh" | "en"))
-                        .then(|| format!("{language}-Latn"));
+                            && language.bytes().all(|byte| byte.is_ascii_alphabetic()))
+                        .then_some(language);
                     }
                 }
                 return None;

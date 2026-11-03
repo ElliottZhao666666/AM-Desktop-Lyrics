@@ -78,6 +78,8 @@ pub enum LyricsTiming {
 }
 
 /// 歌曲 ID 与统一时间轴类型。旧池文件缺少此字段时仍能加载。
+pub const LYRICS_LOCALIZATION_VERSION: u8 = 2;
+
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
 pub struct LyricsStorage {
     pub apple_music_id: Option<String>,

@@ -186,7 +186,7 @@
 </template>
 
 <script setup lang="ts">
-import { computed, onMounted, onUnmounted, ref, watch } from 'vue';
+import { computed, customRef, onMounted, onUnmounted, ref, watch } from 'vue';
 import { invoke } from '@tauri-apps/api/core';
 import { listen, type UnlistenFn } from '@tauri-apps/api/event';
 import { message as showMessage, open, save } from '@tauri-apps/plugin-dialog';
@@ -229,7 +229,20 @@ let savedConfig: AppConfig | null = null;
 let offsetBeforeEdit: number | null = null;
 let lastOwnOffsetRevision = -1;
 const systemFonts = ref<string[]>(['Microsoft YaHei UI']);
-const message = ref('');
+let messageTimer: ReturnType<typeof setTimeout> | undefined;
+const message = customRef<string>((track, trigger) => {
+  let text = '';
+  return {
+    get() { track(); return text; },
+    set(value) {
+      clearTimeout(messageTimer);
+      text = value;
+      trigger();
+      if (value) messageTimer = setTimeout(() => { text = ''; trigger(); }, 5000);
+    },
+  };
+});
+onUnmounted(() => clearTimeout(messageTimer));
 const logText = ref('');
 const currentTrack = ref<TrackIdentity>({ title: '等待播放...', artist: '', album: null });
 const matchQuery = ref({ title: '', artist: '', album: '' });
@@ -520,7 +533,7 @@ async function saveSettings() {
   }
   await pendingLyricsOffsetUpdate;
   settings.value.lyricsTimeOffsetMs = latestLyricsTimeOffset.offsetMs;
-  try { await invoke('save_settings', { settings: settings.value }); config.value.autoChs = settings.value.autoConvertTraditionalToSimplified; savedSettings = JSON.parse(JSON.stringify(settings.value)); if (savedConfig) savedConfig.autoChs = config.value.autoChs; offsetBeforeEdit = null; message.value = '已应用'; setTimeout(() => { message.value = ''; }, 1800); } catch (error) { message.value = String(error); }
+  try { await invoke('save_settings', { settings: settings.value }); config.value.autoChs = settings.value.autoConvertTraditionalToSimplified; savedSettings = JSON.parse(JSON.stringify(settings.value)); if (savedConfig) savedConfig.autoChs = config.value.autoChs; offsetBeforeEdit = null; message.value = '已应用'; } catch (error) { message.value = String(error); }
 }
 async function saveAll() {
   if (activeSection.value === 'lyricsSources') {

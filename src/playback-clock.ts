@@ -13,6 +13,7 @@ export class PlaybackClock {
     this.position = this.targetPosition = this.duration = 0;
     this.lastTime = this.targetTime = now;
     this.rate = 1;
+    this.playing = false;
     this.initialized = false;
   }
 
@@ -29,7 +30,8 @@ export class PlaybackClock {
     this.duration = Number.isFinite(duration) && duration > 0 ? duration : this.duration;
     this.targetPosition = this.limit(position);
     this.targetTime = now;
-    if (!this.initialized || discontinuity || !this.playing) this.position = this.targetPosition;
+    if (!this.initialized || discontinuity) this.position = this.targetPosition;
+    else if (!this.playing) this.targetPosition = this.position;
     this.initialized = true;
     this.lastTime = now;
     return this.position;
@@ -40,9 +42,12 @@ export class PlaybackClock {
     if (this.playing && elapsed > 0) {
       const predicted = this.position + elapsed * this.rate;
       const error = this.targetAt(now) - predicted;
-      // 指数收敛，并限制在原播放速度的 80%～120%，保持正常播放时始终向前。
-      const correctionLimit = elapsed * this.rate * 0.2;
-      const correction = Math.abs(error) < 8 ? 0 : Math.max(-correctionLimit, Math.min(correctionLimit, error * (1 - Math.exp(-elapsed / 800))));
+      // 小误差慢调，大误差快收敛；向后的修正最多暂缓推进，不反向倒放。
+      const magnitude = Math.abs(error);
+      const timeConstant = magnitude >= 500 ? 100 : magnitude >= 120 ? 250 : 800;
+      const correctionRate = magnitude >= 500 ? 2 : magnitude >= 120 ? 0.6 : 0.2;
+      const correction = magnitude < 8 ? 0 : Math.max(-elapsed * this.rate * Math.min(0.95, correctionRate),
+        Math.min(elapsed * this.rate * correctionRate, error * (1 - Math.exp(-elapsed / timeConstant))));
       this.position = this.limit(predicted + correction);
     }
     this.lastTime = Math.max(this.lastTime, now);
