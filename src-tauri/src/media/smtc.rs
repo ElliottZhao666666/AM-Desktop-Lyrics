@@ -175,10 +175,6 @@ fn read_media_state(
     let raw_artist = props.Artist()?.to_string();
     let track =
         parse_apple_music_metadata(raw_title.clone(), raw_artist.clone(), raw_album.clone());
-    println!(
-        "[SMTC] 原始元数据: title={:?}, artist={:?}, album={:?}; 分离后 title={:?}, artist={:?}, album={:?}",
-        raw_title, raw_artist, raw_album, track.title, track.artist, track.album
-    );
 
     // GetPlaybackInfo() 同步获取播放信息，PlaybackStatus() 返回播放状态枚举
     let info = session.GetPlaybackInfo()?;
@@ -494,6 +490,23 @@ fn bind_session(
 pub struct SmtcManager {
     app_handle: Arc<tauri::AppHandle>,
 }
+
+// 保留最早截止时间，连续通知不能无限推迟一次已安排的读取。
+fn schedule_metadata(slot: &mut Option<(Instant, i64)>, now: Instant, observed: i64) {
+    let deadline = now + Duration::from_millis(100);
+    *slot = Some(match *slot {
+        Some((old, stamp)) => (old.min(deadline), stamp.max(observed)),
+        None => (deadline, observed),
+    });
+}
+
+fn timeline_has_new_duration(sample: TimelineSample, previous: &MediaPositionPayload) -> bool {
+    sample.duration_ms > 0
+        && previous.duration_ms > 0
+        && sample.duration_ms.abs_diff(previous.duration_ms) > 2000
+        && sample.position_ms < 5000
+        && previous.position_ms.saturating_add(5000) >= previous.duration_ms
+}
 impl SmtcManager {
     pub fn new(app_handle: tauri::AppHandle) -> Self {
         Self {
@@ -506,6 +519,21 @@ impl SmtcManager {
             Err(error) => eprintln!("[SMTC] WinRT 初始化失败: {error}"),
         });
     }
+}
+
+fn suspend_transition(app: &tauri::AppHandle, snapshot: &MediaSnapshotPayload) {
+    println!("[SMTC] 曲目与时间轴未同步，取消旧歌词请求并等待曲目确认");
+    crate::lyrics::provider::enter_waiting_state();
+    crate::playback::update_lyrics(
+        app,
+        snapshot.media.track_revision,
+        crate::domain::LyricsStatusPayload {
+            track: snapshot.media.track.clone(),
+            state: crate::domain::LyricsLoadState::Loading,
+            message: None,
+        },
+        None,
+    );
 }
 
 // RPC 回调仅入队；读取、去抖、时间轴同步均在初始化过 WinRT 的单一线程执行。
@@ -531,6 +559,8 @@ fn smtc_main_loop(app: Arc<tauri::AppHandle>) {
         let monotonic_origin = Instant::now();
         let mut poll_due = Instant::now();
         let mut validate_due = Instant::now();
+        let mut identity_due = Instant::now();
+        let mut unconfirmed_track: Option<TrackIdentity> = None;
         loop {
             if binding.is_none() {
                 match find_apple_music_session(&manager) {
@@ -546,6 +576,7 @@ fn smtc_main_loop(app: Arc<tauri::AppHandle>) {
                                 poll_due = Instant::now();
                                 stale_sample = None;
                                 timeline_tracker = TimelineTracker::default();
+                                unconfirmed_track = None;
                             }
                             Err(error) => {
                                 eprintln!("[SMTC] 注册事件失败: {error}");
@@ -580,10 +611,7 @@ fn smtc_main_loop(app: Arc<tauri::AppHandle>) {
                         poll_due = Instant::now();
                     }
                     MediaEventKind::Metadata => {
-                        metadata_due = Some((
-                            Instant::now() + Duration::from_millis(400),
-                            event.observed_at,
-                        ))
+                        schedule_metadata(&mut metadata_due, Instant::now(), event.observed_at);
                     }
                     MediaEventKind::Playback => {
                         if let (Ok(info), Ok(snapshot)) = (
@@ -600,6 +628,21 @@ fn smtc_main_loop(app: Arc<tauri::AppHandle>) {
                     }
                 }
             }
+            // 元数据通知可能丢失或早于属性实际更新，不能只轮询时间轴。
+            if Instant::now() >= identity_due {
+                identity_due = Instant::now() + Duration::from_millis(500);
+                if let (Ok(current), Ok(snapshot)) = (
+                    read_media_state(&connected.session),
+                    crate::playback::snapshot(),
+                ) {
+                    if current.track != snapshot.media.track
+                        || current.playback_state != snapshot.media.playback_state
+                        || unconfirmed_track.is_some()
+                    {
+                        metadata_due = Some((Instant::now(), 0));
+                    }
+                }
+            }
             if metadata_due.is_some_and(|(deadline, _)| Instant::now() >= deadline) {
                 let (_, observed_at) = metadata_due.take().unwrap();
                 match (
@@ -607,44 +650,70 @@ fn smtc_main_loop(app: Arc<tauri::AppHandle>) {
                     read_timeline(&connected.session),
                     read_media_state(&connected.session),
                 ) {
-                    (Ok(first), Ok(sample), Ok(second)) if first.track == second.track => {
+                    (Ok(first), Ok(sample), Ok(second))
+                        if first.track == second.track
+                            && unconfirmed_track.as_ref() != Some(&second.track) =>
+                    {
                         let previous = crate::playback::snapshot().ok();
                         let changed = previous
                             .as_ref()
                             .is_none_or(|previous| previous.media.track != second.track);
-                        if changed {
-                            stale_sample = if observed_at > 0
-                                && sample.updated_at.saturating_add(2_000_000) < observed_at
-                            {
-                                Some(sample)
-                            } else {
-                                None
-                            };
-                        }
-                        let media =
-                            crate::playback::update_media(&app, normalize_playable_state(second));
-                        if is_unavailable_track(&media.track) {
-                            crate::lyrics::provider::enter_waiting_state();
+                        if !changed
+                            && previous
+                                .as_ref()
+                                .is_some_and(|old| timeline_has_new_duration(sample, &old.position))
+                        {
+                            unconfirmed_track = Some(second.track.clone());
+                            suspend_transition(&app, previous.as_ref().unwrap());
+                            metadata_due =
+                                Some((Instant::now() + Duration::from_millis(200), observed_at));
                         } else {
-                            let position = if stale_sample == Some(sample) {
-                                MediaPositionPayload::default()
-                            } else {
-                                timeline_tracker.observe(
-                                    sample,
-                                    media.playback_state == PlaybackState::Playing,
-                                    media.track_revision,
-                                    utc_ticks(),
-                                    monotonic_origin.elapsed().as_millis() as u64,
-                                )
-                            };
-                            let duration = position.duration_ms;
-                            crate::playback::update_position(&app, media.track_revision, position);
-                            crate::lyrics::provider::fetch_and_emit_lyrics(
-                                media.track,
-                                (*app).clone(),
-                                duration,
-                                media.track_revision,
+                            if changed {
+                                println!("[SMTC] 已核对新曲目: {:?}", second.track);
+                                unconfirmed_track = None;
+                            }
+                            if changed {
+                                stale_sample = if timeline_tracker.sample == Some(sample)
+                                    || (observed_at > 0
+                                        && sample.updated_at.saturating_add(2_000_000)
+                                            < observed_at)
+                                {
+                                    Some(sample)
+                                } else {
+                                    None
+                                };
+                            }
+                            let media = crate::playback::update_media(
+                                &app,
+                                normalize_playable_state(second),
                             );
+                            if is_unavailable_track(&media.track) {
+                                crate::lyrics::provider::enter_waiting_state();
+                            } else {
+                                let position = if stale_sample == Some(sample) {
+                                    MediaPositionPayload::default()
+                                } else {
+                                    timeline_tracker.observe(
+                                        sample,
+                                        media.playback_state == PlaybackState::Playing,
+                                        media.track_revision,
+                                        utc_ticks(),
+                                        monotonic_origin.elapsed().as_millis() as u64,
+                                    )
+                                };
+                                let duration = position.duration_ms;
+                                crate::playback::update_position(
+                                    &app,
+                                    media.track_revision,
+                                    position,
+                                );
+                                crate::lyrics::provider::fetch_and_emit_lyrics(
+                                    media.track,
+                                    (*app).clone(),
+                                    duration,
+                                    media.track_revision,
+                                );
+                            }
                         }
                     }
                     (Err(error), _, _) => {
@@ -665,6 +734,24 @@ fn smtc_main_loop(app: Arc<tauri::AppHandle>) {
                     crate::playback::snapshot(),
                 ) {
                     (Ok(sample), Ok(snapshot)) => {
+                        // 获取歌词前再次核对身份，避免时间轴先变、曲目事件后到。
+                        if let Ok(current) = read_media_state(&connected.session) {
+                            if current.track != snapshot.media.track {
+                                metadata_due = Some((Instant::now(), 0));
+                                continue;
+                            }
+                        } else {
+                            continue;
+                        }
+                        if timeline_has_new_duration(sample, &snapshot.position) {
+                            if unconfirmed_track.is_none() {
+                                println!("[SMTC] 时间轴时长先于曲目更新，暂缓旧曲目歌词请求");
+                                unconfirmed_track = Some(snapshot.media.track.clone());
+                                suspend_transition(&app, &snapshot);
+                            }
+                            metadata_due = Some((Instant::now(), 0));
+                            continue;
+                        }
                         if stale_sample.is_some_and(|stale| stale != sample) {
                             stale_sample = None;
                         }
@@ -763,6 +850,73 @@ pub async fn prev_track() -> Result<(), String> {
 }
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn metadata_notifications_have_a_bounded_deadline() {
+        let now = std::time::Instant::now();
+        let mut due = None;
+        for i in 0..20 {
+            super::schedule_metadata(
+                &mut due,
+                now + std::time::Duration::from_millis(i * 20),
+                i as i64,
+            );
+        }
+        assert_eq!(due.unwrap().0, now + std::time::Duration::from_millis(100));
+        assert_eq!(due.unwrap().1, 19);
+    }
+    #[test]
+    fn new_song_timeline_is_not_paired_with_finished_song() {
+        let sample = super::TimelineSample {
+            position_ms: 0,
+            duration_ms: 210000,
+            updated_at: 10000000,
+            rate: 1.0,
+            quantum_ms: 1000,
+        };
+        let old = crate::domain::MediaPositionPayload {
+            position_ms: 179000,
+            duration_ms: 180000,
+            ..Default::default()
+        };
+        assert!(super::timeline_has_new_duration(sample, &old));
+        assert!(!super::timeline_has_new_duration(
+            super::TimelineSample {
+                duration_ms: 180000,
+                ..sample
+            },
+            &old
+        ));
+        assert!(!super::timeline_has_new_duration(
+            sample,
+            &crate::domain::MediaPositionPayload {
+                position_ms: 10000,
+                ..old
+            }
+        ));
+    }
+    #[test]
+    #[ignore = "用户授权时只读采样实时曲目与时间轴，不操作播放器"]
+    fn trace_live_track_transitions() {
+        let _apartment = super::WinRtApartment::initialize().unwrap();
+        let manager = windows::Media::Control::GlobalSystemMediaTransportControlsSessionManager::RequestAsync().unwrap().get().unwrap();
+        let session = super::find_apple_music_session(&manager)
+            .unwrap()
+            .expect("Apple Music session");
+        for _ in 0..100 {
+            let media = super::read_media_state(&session).unwrap();
+            let t = super::read_timeline(&session).unwrap();
+            println!(
+                "SAMPLE {} {:?} {} {} {:?}",
+                super::utc_ticks(),
+                media.track,
+                t.position_ms,
+                t.duration_ms,
+                media.playback_state
+            );
+            std::thread::sleep(std::time::Duration::from_millis(500));
+        }
+    }
+
     use super::{clean_artist, is_unavailable_track, parse_apple_music_metadata};
     #[test]
     fn unchanged_samples_use_monotonic_time_and_resume_excludes_pause_time() {
